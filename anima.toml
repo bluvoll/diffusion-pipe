@@ -1,0 +1,101 @@
+# Anima Training Configuration
+# Anima is based on Cosmos-Predict2 with dual text encoders (Qwen3-0.6B + T5's Tokenizer)
+
+output_dir = '/home/bluvoll/anima-test'
+dataset = 'dataset.toml'
+
+# Training settings
+epochs = 50
+micro_batch_size_per_gpu = 6
+pipeline_stages = 1
+gradient_accumulation_steps = 1
+gradient_clipping = 1.0
+warmup_steps = 100
+
+# Save settings
+save_every_n_epochs = 1
+#checkpoint_every_n_minutes = 120
+activation_checkpointing = true
+save_dtype = 'bfloat16'
+
+
+# Block swapping for lower VRAM usage (optional)
+# blocks_to_swap = 10
+
+[model]
+type = 'anima'
+
+# Anima transformer checkpoint (contains both MiniTrainDIT and LLMAdapter weights)
+transformer_path = '/home/bluvoll/diffusion-pipe/anima/split_files/diffusion_models/anima-preview.safetensors'
+
+# VAE - Qwen Image VAE (16 channel latent space)
+# Use the VAE from Qwen-Image model
+vae_path = '/home/bluvoll/ComfyUI/diffusion-pipe/anima/split_files/vae/qwen_image_vae.safetensors'
+
+# Qwen3-0.6B model path (HuggingFace format directory)
+# This should contain the full Qwen3-0.6B model files (config.json, model.safetensors, tokenizer files, etc.)
+qwen_path = '/home/bluvoll/diffusion-pipe/qwen0.6/'
+# Optional: separate state dict path if not loading from the HF directory
+# qwen_state_dict_path = '/path/to/qwen_weights.safetensors'
+
+# Base dtype for all models
+dtype = 'bfloat16'
+
+# Transformer dtype (can use fp8 for lower VRAM)
+# transformer_dtype = 'float8'
+
+# Timestep sampling method
+timestep_sample_method = 'logit_normal'
+# Sigmoid scale for logit_normal sampling
+sigmoid_scale = 1.0
+
+# Optional: shift parameter for timestep sampling
+shift = 3.0
+
+# Text embedding caching (recommended for training efficiency)
+# Set to false to enable training-time tag shuffling
+cache_text_embeddings = false
+caching_batch_size = 5
+
+# Training-time tag shuffling for danbooru-style captions
+# NOTE: Requires cache_text_embeddings = false to work!
+# For cached embeddings, use cache_shuffle_num in your dataset config instead.
+shuffle_tags = true
+tag_delimiter = ', '
+# Keep first N tags in place (useful for trigger words), shuffle the rest
+# keep_first_n_tags = 0
+
+# Optional: quantize Qwen model to NF4 for lower VRAM
+qwen_nf4 = true
+
+# Optional: use FP8 for Qwen model weights
+# qwen_fp8 = true
+
+# LoRA adapter configuration
+[adapter]
+type = 'lora'
+rank = 32
+dtype = 'bfloat16'
+# Optional: initialize from existing LoRA
+# init_from_existing = '/path/to/existing_lora'
+
+[optimizer]
+type = 'adamw_optimi'
+lr = 5e-5
+betas = [0.9, 0.99]
+weight_decay = 0.01
+eps = 1e-8
+
+# Alternative: 8-bit AdamW for lower memory
+# [optimizer]
+# type = 'AdamW8bitKahan'
+# lr = 2e-5
+# betas = [0.9, 0.99]
+# weight_decay = 0.01
+# stabilize = false
+
+#[monitoring]
+#enable_wandb = false
+#wandb_api_key = ''
+#wandb_tracker_name = ''
+#wandb_run_name = ''

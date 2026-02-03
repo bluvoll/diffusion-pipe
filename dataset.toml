@@ -46,7 +46,7 @@ num_ar_buckets = 7
 [[directory]]
 # Path to directory of images/videos, and corresponding caption files. The caption files should match the media file name, but with a .txt extension.
 # A missing caption file will log a warning, but then just train using an empty caption.
-path = '/home/bluvoll/Escritorio/anime/musaigen/'
+path = '/home/bluvoll/Escritorio/data-upload-chromav4-exp/baking/Delta26/'
 
 # You can do masked training, where the mask indicates which parts of the image to train on. The masking is done in the loss function. The mask directory should have mask
 # images with the same names (ignoring the extension) as the training images. E.g. training image 1.jpg could have mask image 1.jpg, 1.png, etc. If a training image doesn't

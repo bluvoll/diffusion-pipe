@@ -4,6 +4,8 @@
 
 import math
 import random
+import os
+from pathlib import Path
 
 import torch
 from torch import nn
@@ -22,6 +24,421 @@ from utils.offloading import ModelOffloader
 
 
 KEEP_IN_HIGH_PRECISION = ['x_embedder', 't_embedder', 't_embedding_norm', 'final_layer', 'llm_adapter']
+
+# Minimum number of tags that must survive dropout
+MIN_SURVIVING_TAGS = 3
+
+# Default weights for mixed caption mode
+DEFAULT_MIXED_WEIGHTS = {'tags': 50, 'nl': 10, 'tags_nl': 20, 'nl_tags': 20}
+
+
+def _load_protected_tags(filepath):
+    """
+    Load protected tags from file.
+
+    Args:
+        filepath: Path to protected_tags.txt (one tag per line)
+
+    Returns:
+        Set of protected tag strings
+    """
+    if not filepath:
+        return set()
+
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            tags = set()
+            for line in f:
+                tag = line.strip()
+                if tag and not tag.startswith('#'):  # Allow comments
+                    tags.add(tag)
+            return tags
+    except FileNotFoundError:
+        print(f"Warning: protected_tags_file not found: {filepath}")
+        return set()
+    except Exception as e:
+        print(f"Warning: Error loading protected_tags_file: {e}")
+        return set()
+
+
+def _apply_tag_dropout(tags, dropout_percent, protected_indices, protected_tags):
+    """
+    Drop a percentage of tags, respecting protections.
+
+    Args:
+        tags: List of tag strings
+        dropout_percent: Fraction of tags to drop (0.0 to 1.0)
+        protected_indices: Indices protected by keep_first_n
+        protected_tags: Tag strings protected by protected_tags_file
+
+    Returns:
+        (surviving_tags, dropped_tags) tuple
+    """
+    if dropout_percent <= 0 or len(tags) == 0:
+        return tags, []
+
+    # Identify which tags can be dropped
+    droppable_indices = []
+    for i, tag in enumerate(tags):
+        if i in protected_indices:
+            continue
+        if tag.strip() in protected_tags:
+            continue
+        droppable_indices.append(i)
+
+    if len(droppable_indices) == 0:
+        return tags, []
+
+    # Calculate how many to drop
+    num_to_drop = int(len(droppable_indices) * dropout_percent)
+
+    # Ensure minimum survivors
+    max_droppable = len(tags) - MIN_SURVIVING_TAGS
+    num_to_drop = min(num_to_drop, max(0, max_droppable))
+
+    if num_to_drop == 0:
+        return tags, []
+
+    # Randomly select indices to drop
+    drop_indices = set(random.sample(droppable_indices, num_to_drop))
+
+    surviving = []
+    dropped = []
+    for i, tag in enumerate(tags):
+        if i in drop_indices:
+            dropped.append(tag)
+        else:
+            surviving.append(tag)
+
+    return surviving, dropped
+
+
+def _process_nl_caption(nl_caption, shuffle_sentences, keep_first_sentence):
+    """
+    Process NL caption with optional sentence shuffling.
+
+    Args:
+        nl_caption: Raw NL caption string
+        shuffle_sentences: Whether to shuffle sentences
+        keep_first_sentence: Keep first sentence in place when shuffling
+
+    Returns:
+        Processed NL caption string
+    """
+    if not shuffle_sentences or not nl_caption:
+        return nl_caption
+
+    # Split by ". " (period + space)
+    # Handle edge cases: trailing period, multiple spaces
+    sentences = []
+    for s in nl_caption.split('. '):
+        s = s.strip()
+        if s:
+            sentences.append(s)
+
+    if len(sentences) <= 1:
+        return nl_caption
+
+    if keep_first_sentence:
+        first = sentences[0]
+        rest = sentences[1:]
+        random.shuffle(rest)
+        sentences = [first] + rest
+    else:
+        random.shuffle(sentences)
+
+    # Rejoin, ensuring proper period spacing
+    result = '. '.join(s.rstrip('.') for s in sentences)
+    if not result.endswith('.'):
+        result += '.'
+
+    return result
+
+
+def _select_variant(caption_mode, mixed_weights, has_nl_caption):
+    """
+    Select which caption variant to use for this sample.
+
+    Args:
+        caption_mode: "tags", "nl", or "mixed"
+        mixed_weights: Weight dict for mixed mode
+        has_nl_caption: Whether NL caption is available
+
+    Returns:
+        Variant string: "tags", "nl", "tags_nl", or "nl_tags"
+    """
+    if caption_mode == "tags":
+        return "tags"
+    elif caption_mode == "nl":
+        return "nl" if has_nl_caption else "tags"
+    elif caption_mode == "mixed":
+        # Build available variants with weights
+        available = {"tags": mixed_weights.get("tags", 50)}
+        if has_nl_caption:
+            available["nl"] = mixed_weights.get("nl", 10)
+            available["tags_nl"] = mixed_weights.get("tags_nl", 20)
+            available["nl_tags"] = mixed_weights.get("nl_tags", 20)
+
+        # Normalize and select
+        total = sum(available.values())
+        if total == 0:
+            return "tags"
+
+        r = random.random() * total
+        cumulative = 0
+        for variant, weight in available.items():
+            cumulative += weight
+            if r <= cumulative:
+                return variant
+
+        return "tags"  # Fallback
+    else:
+        return "tags"  # Unknown mode fallback
+
+
+def _construct_caption(variant, processed_tags, processed_nl):
+    """
+    Construct final caption string based on selected variant.
+
+    Args:
+        variant: "tags", "nl", "tags_nl", or "nl_tags"
+        processed_tags: Processed tag string
+        processed_nl: Processed NL caption string
+
+    Returns:
+        Final caption string
+    """
+    if variant == "tags":
+        return processed_tags
+    elif variant == "nl":
+        return processed_nl
+    elif variant == "tags_nl":
+        return f"{processed_tags}. {processed_nl}"
+    elif variant == "nl_tags":
+        return f"{processed_nl}. {processed_tags}"
+    else:
+        return processed_tags  # Fallback
+
+
+def _load_nl_caption(image_spec):
+    """
+    Load NL caption from {basename}_nl.txt file.
+
+    Args:
+        image_spec: Tuple of (tar_file, image_path)
+
+    Returns:
+        NL caption string or None if not found
+    """
+    tar_file, image_path = image_spec
+    if tar_file is not None:
+        # Tar files not supported for NL captions yet
+        return None
+
+    image_path = Path(image_path)
+    nl_path = image_path.parent / f"{image_path.stem}_nl.txt"
+
+    if not nl_path.exists():
+        return None
+
+    try:
+        with open(nl_path, 'r', encoding='utf-8') as f:
+            content = f.read().strip()
+            return content if content else None
+    except Exception:
+        return None
+
+
+def _should_debug_sample(sample_idx, interval):
+    """Determine if we should print debug info for this sample."""
+    if interval == 0:
+        return True  # Every sample
+    elif interval == -1:
+        return sample_idx < 10  # First 10 only
+    else:
+        return sample_idx % interval == 0
+
+
+def _print_debug(sample_idx, info, full_dropout):
+    """Print debug information for a sample."""
+    print(f"\n[Caption Debug | Sample {sample_idx}]")
+
+    if full_dropout:
+        print(f"├─ Full caption dropout: YES (CFG training)")
+        print(f"├─ Final caption: \"\"")
+        print(f"└─ (all other processing skipped)")
+        return
+
+    print(f"├─ Original tags: \"{info.get('original_tags', '')}\"")
+
+    nl = info.get('original_nl')
+    if nl:
+        # Truncate long NL captions for display
+        display_nl = nl[:100] + "..." if len(nl) > 100 else nl
+        print(f"├─ Original NL: \"{display_nl}\"")
+    else:
+        print(f"├─ Original NL: (none)")
+
+    if info.get('protected_indices'):
+        print(f"├─ Protected indices (keep_first_n): {info['protected_indices']}")
+
+    if info.get('protected_tags_matched'):
+        print(f"├─ Protected tags (from file): {info['protected_tags_matched']}")
+
+    dropped = info.get('dropped_tags', [])
+    if dropped:
+        print(f"├─ Dropped tags: {dropped}")
+
+    print(f"├─ Surviving tags: \"{info.get('surviving_tags', '')}\"")
+
+    if info.get('nl_shuffled') and info.get('nl_shuffled') != info.get('original_nl'):
+        display_nl = info['nl_shuffled'][:100] + "..." if len(info['nl_shuffled']) > 100 else info['nl_shuffled']
+        print(f"├─ NL shuffled: \"{display_nl}\"")
+
+    print(f"├─ Variant selected: {info.get('variant', 'unknown')}")
+
+    final = info.get('final_caption', '')
+    display_final = final[:150] + "..." if len(final) > 150 else final
+    print(f"├─ Final caption: \"{display_final}\"")
+    print(f"└─ Full caption dropout: No")
+
+
+def _log_caption_stats(debug_state, step, interval=1000):
+    """Log caption processing statistics periodically."""
+    if step % interval != 0 or step == 0:
+        return
+
+    variants = ['tags', 'nl', 'tags_nl', 'nl_tags']
+    variant_counts = [debug_state.get(f'variant_{v}', 0) for v in variants]
+    total = sum(variant_counts)
+
+    if total == 0:
+        return
+
+    percentages = [f"{v}={c}({100*c//total}%)" for v, c in zip(variants, variant_counts)]
+
+    tag_dropout = debug_state.get('tag_dropout_count', 0)
+    full_dropout = debug_state.get('full_dropout_count', 0)
+
+    print(f"Step {step} | Variants: {', '.join(percentages)} | "
+          f"Tag drops: {tag_dropout} | CFG drops: {full_dropout}")
+
+
+def _process_caption_full(
+    tags_str,
+    image_spec,
+    config,
+    protected_tags,
+    sample_idx,
+    debug_state
+):
+    """
+    Full caption processing pipeline.
+
+    Args:
+        tags_str: Raw tags string from caption file
+        image_spec: Tuple of (tar_file, image_path) for loading NL caption
+        config: Dict with caption processing config options
+        protected_tags: Set of protected tag strings
+        sample_idx: Current sample index (for debug logging)
+        debug_state: Mutable dict for tracking stats
+
+    Returns:
+        Final caption string for training
+    """
+    debug_info = {}
+    debug_enabled = config.get('debug_caption_processing', False)
+    debug_interval = config.get('debug_caption_interval', 100)
+
+    should_debug = debug_enabled and _should_debug_sample(sample_idx, debug_interval)
+
+    # Step 1: Full caption dropout (CFG training)
+    caption_dropout = config.get('caption_dropout_percent', 0.0)
+    if caption_dropout > 0 and random.random() < caption_dropout:
+        debug_state['full_dropout_count'] = debug_state.get('full_dropout_count', 0) + 1
+        if should_debug:
+            _print_debug(sample_idx, debug_info, full_dropout=True)
+        return ""
+
+    if should_debug:
+        debug_info['original_tags'] = tags_str
+
+    # Step 2: Load NL caption if needed
+    caption_mode = config.get('caption_mode', 'tags')
+    nl_caption = None
+    if caption_mode in ['nl', 'mixed']:
+        nl_caption = _load_nl_caption(image_spec)
+
+    if should_debug:
+        debug_info['original_nl'] = nl_caption
+
+    # Step 3: Parse and process tags
+    delimiter = config.get('tag_delimiter', ', ')
+    tags = [t.strip() for t in tags_str.split(delimiter) if t.strip()]
+
+    # Shuffle tags
+    if config.get('shuffle_tags', False):
+        keep_first_n = config.get('shuffle_keep_first_n', 0)
+        if keep_first_n > 0 and keep_first_n < len(tags):
+            prefix = tags[:keep_first_n]
+            suffix = tags[keep_first_n:]
+            random.shuffle(suffix)
+            tags = prefix + suffix
+        else:
+            random.shuffle(tags)
+
+    # Apply tag dropout
+    dropout_percent = config.get('tag_dropout_percent', 0.0)
+    keep_first_n = config.get('shuffle_keep_first_n', 0)
+    protected_indices = set(range(min(keep_first_n, len(tags))))
+
+    dropped_tags = []
+    if dropout_percent > 0:
+        tags, dropped_tags = _apply_tag_dropout(
+            tags, dropout_percent, protected_indices, protected_tags
+        )
+        debug_state['tag_dropout_count'] = debug_state.get('tag_dropout_count', 0) + len(dropped_tags)
+
+    processed_tags = delimiter.join(tags)
+
+    if should_debug:
+        debug_info['protected_indices'] = protected_indices if protected_indices else None
+        debug_info['protected_tags_matched'] = [t for t in tags if t in protected_tags]
+        debug_info['dropped_tags'] = dropped_tags
+        debug_info['surviving_tags'] = processed_tags
+
+    # Step 4: Process NL caption
+    has_nl = nl_caption is not None and len(nl_caption.strip()) > 0
+    processed_nl = ""
+
+    if has_nl:
+        processed_nl = _process_nl_caption(
+            nl_caption,
+            config.get('nl_shuffle_sentences', False),
+            config.get('nl_keep_first_sentence', False)
+        )
+        if should_debug:
+            debug_info['nl_shuffled'] = processed_nl
+
+    # Step 5: Select variant
+    mixed_weights = config.get('mixed_weights', DEFAULT_MIXED_WEIGHTS)
+    variant = _select_variant(caption_mode, mixed_weights, has_nl)
+
+    # Track variant distribution
+    variant_key = f'variant_{variant}'
+    debug_state[variant_key] = debug_state.get(variant_key, 0) + 1
+
+    if should_debug:
+        debug_info['variant'] = variant
+
+    # Step 6: Construct final caption
+    final_caption = _construct_caption(variant, processed_tags, processed_nl)
+
+    if should_debug:
+        debug_info['final_caption'] = final_caption
+        _print_debug(sample_idx, debug_info, full_dropout=False)
+
+    return final_caption
 
 
 def _shuffle_tags(caption, delimiter=', ', keep_first_n=0):
@@ -120,10 +537,55 @@ class AnimaPipeline(BasePipeline):
         dtype = self.model_config['dtype']
         self.cache_text_embeddings = self.model_config.get('cache_text_embeddings', True)
 
-        # Training-time tag shuffling (only works when cache_text_embeddings=false)
-        self.shuffle_tags = self.model_config.get('shuffle_tags', False)
-        self.tag_delimiter = self.model_config.get('tag_delimiter', ', ')
-        self.keep_first_n_tags = self.model_config.get('keep_first_n_tags', 0)
+        # === Caption Processing Config ===
+        # Build a config dict for caption processing
+        self.caption_config = {
+            # Tag processing
+            'shuffle_tags': self.model_config.get('shuffle_tags', False),
+            'tag_delimiter': self.model_config.get('tag_delimiter', ', '),
+            'shuffle_keep_first_n': self.model_config.get('shuffle_keep_first_n', 0),
+            'tag_dropout_percent': self.model_config.get('tag_dropout_percent', 0.0),
+
+            # NL caption processing
+            'nl_shuffle_sentences': self.model_config.get('nl_shuffle_sentences', False),
+            'nl_keep_first_sentence': self.model_config.get('nl_keep_first_sentence', False),
+
+            # Caption dropout (CFG training)
+            'caption_dropout_percent': self.model_config.get('caption_dropout_percent', 0.0),
+
+            # Mode selection
+            'caption_mode': self.model_config.get('caption_mode', 'tags'),
+            'mixed_weights': self.model_config.get('mixed_weights', DEFAULT_MIXED_WEIGHTS),
+
+            # Debug
+            'debug_caption_processing': self.model_config.get('debug_caption_processing', False),
+            'debug_caption_interval': self.model_config.get('debug_caption_interval', 100),
+        }
+
+        # Load protected tags
+        protected_tags_file = self.model_config.get('protected_tags_file', None)
+        self.protected_tags = _load_protected_tags(protected_tags_file)
+        if protected_tags_file and self.protected_tags:
+            print(f"Loaded {len(self.protected_tags)} protected tags from {protected_tags_file}")
+
+        # Caption processing state for stats tracking
+        self.caption_debug_state = {}
+        self.caption_sample_idx = 0
+
+        # Validate config
+        self._validate_caption_config()
+
+        # Legacy compatibility
+        self.shuffle_tags = self.caption_config['shuffle_tags']
+        self.tag_delimiter = self.caption_config['tag_delimiter']
+        self.keep_first_n_tags = self.caption_config['shuffle_keep_first_n']
+
+        # Warn about caching incompatibility
+        caption_mode = self.caption_config['caption_mode']
+        if self.cache_text_embeddings and caption_mode != 'tags':
+            print(f"WARNING: caption_mode='{caption_mode}' requires cache_text_embeddings=false. "
+                  "Falling back to caption_mode='tags'.")
+            self.caption_config['caption_mode'] = 'tags'
         if self.shuffle_tags and self.cache_text_embeddings:
             print("WARNING: shuffle_tags requires cache_text_embeddings=false to work at training time. "
                   "With cache_text_embeddings=true, use cache_shuffle_num in your dataset config instead.")
@@ -180,6 +642,27 @@ class AnimaPipeline(BasePipeline):
                     p.data = p.data.to(torch.float8_e4m3fn)
 
         self.qwen_model.requires_grad_(False)
+
+    def _validate_caption_config(self):
+        """Validate caption-related config options."""
+        config = self.caption_config
+
+        caption_mode = config.get('caption_mode', 'tags')
+        valid_modes = ['tags', 'nl', 'mixed']
+        if caption_mode not in valid_modes:
+            raise ValueError(f"caption_mode must be one of {valid_modes}, got '{caption_mode}'")
+
+        dropout = config.get('tag_dropout_percent', 0.0)
+        if not 0.0 <= dropout <= 1.0:
+            raise ValueError(f"tag_dropout_percent must be between 0.0 and 1.0, got {dropout}")
+
+        caption_dropout = config.get('caption_dropout_percent', 0.0)
+        if not 0.0 <= caption_dropout <= 1.0:
+            raise ValueError(f"caption_dropout_percent must be between 0.0 and 1.0, got {caption_dropout}")
+
+        if caption_mode in ['nl', 'mixed']:
+            print(f"Note: caption_mode='{caption_mode}' expects {{name}}_nl.txt files. "
+                  "Samples without NL captions will fall back to tags.")
 
     def load_diffusion_model(self):
         dtype = self.model_config['dtype']
@@ -287,15 +770,43 @@ class AnimaPipeline(BasePipeline):
             qwen_inputs = (inputs['qwen_embeds'],)
             t5_input_ids = inputs['t5_input_ids']
         else:
-            # Compute on-the-fly
+            # Compute on-the-fly with full caption processing
             captions = inputs['caption']
+            image_specs = inputs.get('image_spec', None)
 
-            # Apply training-time tag shuffling if enabled
-            if self.shuffle_tags:
-                if isinstance(captions, list):
-                    captions = [_shuffle_tags(c, self.tag_delimiter, self.keep_first_n_tags) for c in captions]
-                else:
-                    captions = _shuffle_tags(captions, self.tag_delimiter, self.keep_first_n_tags)
+            # Process each caption through the full pipeline
+            if isinstance(captions, list):
+                processed_captions = []
+                for i, caption in enumerate(captions):
+                    # Get image_spec for this sample (for NL caption loading)
+                    image_spec = image_specs[i] if image_specs else (None, None)
+
+                    processed = _process_caption_full(
+                        caption,
+                        image_spec,
+                        self.caption_config,
+                        self.protected_tags,
+                        self.caption_sample_idx,
+                        self.caption_debug_state
+                    )
+                    processed_captions.append(processed)
+                    self.caption_sample_idx += 1
+
+                captions = processed_captions
+            else:
+                image_spec = image_specs[0] if image_specs else (None, None)
+                captions = _process_caption_full(
+                    captions,
+                    image_spec,
+                    self.caption_config,
+                    self.protected_tags,
+                    self.caption_sample_idx,
+                    self.caption_debug_state
+                )
+                self.caption_sample_idx += 1
+
+            # Log stats periodically
+            _log_caption_stats(self.caption_debug_state, self.caption_sample_idx)
 
             qwen_encoding = _tokenize_qwen(self.qwen_tokenizer, captions)
             qwen_inputs = (qwen_encoding.input_ids, qwen_encoding.attention_mask)
@@ -396,32 +907,55 @@ class InitialLayer(nn.Module):
     @torch.autocast('cuda', dtype=AUTOCAST_DTYPE)
     def forward(self, inputs):
         x_B_C_T_H_W, timesteps_B_T, *text_inputs = inputs
+        batch_size = x_B_C_T_H_W.shape[0]
+        target_device = x_B_C_T_H_W.device
+        target_dtype = x_B_C_T_H_W.dtype
 
         # If qwen_model is not None, we need to compute embeddings on-the-fly.
         # In cached mode, qwen_embeds is already computed and passed through.
         if self.qwen_model is None:
             assert len(text_inputs) == 2, f"Expected cached inputs (qwen_embeds, t5_input_ids), got {len(text_inputs)} items."
             qwen_embeds, t5_input_ids = text_inputs
+
+            if qwen_embeds.device != target_device:
+                qwen_embeds = qwen_embeds.to(target_device)
+            if t5_input_ids.device != target_device:
+                t5_input_ids = t5_input_ids.to(target_device)
+            if t5_input_ids.dtype != torch.long:
+                t5_input_ids = t5_input_ids.long()
+
+            # Process through LLM adapter
+            crossattn_emb = self.llm_adapter(qwen_embeds, t5_input_ids)
         else:
             assert len(text_inputs) == 3, f"Expected non-cached inputs (qwen_input_ids, qwen_attention_mask, t5_input_ids), got {len(text_inputs)} items."
             qwen_input_ids, qwen_attention_mask, t5_input_ids = text_inputs
-            with torch.no_grad():
-                qwen_embeds = _compute_qwen_embeddings(
-                    self.qwen_model,
-                    qwen_input_ids,
-                    qwen_attention_mask,
-                )
 
-        target_device = x_B_C_T_H_W.device
-        if qwen_embeds.device != target_device:
-            qwen_embeds = qwen_embeds.to(target_device)
-        if t5_input_ids.device != target_device:
-            t5_input_ids = t5_input_ids.to(target_device)
-        if t5_input_ids.dtype != torch.long:
-            t5_input_ids = t5_input_ids.long()
+            # Check for empty prompts - return zero embeddings directly (matches diffusers behavior)
+            # Empty prompts have attention_mask sum of 1 (just the EOS/padding token)
+            lengths = qwen_attention_mask.sum(dim=1)
+            all_empty = (lengths <= 1).all().item()
 
-        # Process through LLM adapter to get final cross-attention embeddings
-        crossattn_emb = self.llm_adapter(qwen_embeds, t5_input_ids)
+            if all_empty:
+                # Return zeros directly without running through models (CFG optimization)
+                # target_dim=1024 for Anima's LLMAdapter
+                crossattn_emb = torch.zeros(batch_size, 512, 1024, device=target_device, dtype=target_dtype)
+            else:
+                with torch.no_grad():
+                    qwen_embeds = _compute_qwen_embeddings(
+                        self.qwen_model,
+                        qwen_input_ids,
+                        qwen_attention_mask,
+                    )
+
+                if qwen_embeds.device != target_device:
+                    qwen_embeds = qwen_embeds.to(target_device)
+                if t5_input_ids.device != target_device:
+                    t5_input_ids = t5_input_ids.to(target_device)
+                if t5_input_ids.dtype != torch.long:
+                    t5_input_ids = t5_input_ids.long()
+
+                # Process through LLM adapter to get final cross-attention embeddings
+                crossattn_emb = self.llm_adapter(qwen_embeds, t5_input_ids)
 
         # Pad to 512 tokens if needed
         if crossattn_emb.shape[1] < 512:

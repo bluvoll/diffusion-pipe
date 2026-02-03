@@ -1,0 +1,23 @@
+# Protected tags - one per line
+# These tags will never be dropped by tag_dropout
+# Lines starting with # are comments
+
+# Subject tags
+1girl
+1boy
+solo
+multiple girls
+multiple boys
+
+# Quality tags
+masterpiece
+best quality
+highres
+absurdres
+
+# Style tags
+# anime_style
+# realistic
+
+# Add your important tags here
+# Character names, trigger words, etc.

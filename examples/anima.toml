@@ -1,0 +1,120 @@
+# Example Anima training config
+# Anima is based on Cosmos-Predict2 with dual text encoders (Qwen3-0.6B + T5)
+
+output_dir = '/path/to/training_runs/anima'
+dataset = 'path/to/dataset.toml'
+
+# Training settings
+epochs = 100
+micro_batch_size_per_gpu = 1
+pipeline_stages = 1
+gradient_accumulation_steps = 1
+gradient_clipping = 1.0
+warmup_steps = 100
+activation_checkpointing = true
+
+# Eval settings
+eval_every_n_epochs = 1
+eval_before_first_step = true
+eval_micro_batch_size_per_gpu = 1
+eval_gradient_accumulation_steps = 1
+
+# Save settings
+save_every_n_epochs = 5
+checkpoint_every_n_minutes = 60
+save_dtype = 'bfloat16'
+
+# Model configuration
+[model]
+type = 'anima'
+transformer_path = '/path/to/anima/transformer.safetensors'
+vae_path = '/path/to/anima/vae.safetensors'
+qwen_path = '/path/to/Qwen3-0.6B'
+dtype = 'bfloat16'
+
+# For FP8 transformer (LoRA only)
+# transformer_dtype = 'float8'
+
+# Quantize Qwen to NF4 for lower VRAM usage
+# qwen_nf4 = true
+
+# Timestep sampling
+timestep_sample_method = 'logit_normal'
+
+# IMPORTANT: For caption processing features, set this to false
+cache_text_embeddings = false
+
+# ============================================
+# Caption Processing Options
+# ============================================
+
+# --- Tag Processing ---
+# Shuffle tags at training time (requires cache_text_embeddings=false)
+shuffle_tags = true
+# Tag delimiter (default: ", ")
+tag_delimiter = ', '
+# Keep first N tags in position when shuffling (useful for trigger words)
+# These tags are also protected from dropout
+shuffle_keep_first_n = 1
+
+# --- Tag Dropout ---
+# Drop a percentage of tags to improve robustness (0.0 to 1.0)
+# Minimum 3 tags will always survive
+tag_dropout_percent = 0.10
+# Path to file with protected tags (one per line, never dropped)
+# protected_tags_file = '/path/to/protected_tags.txt'
+
+# --- NL Caption Processing ---
+# Enable sentence shuffling for NL captions
+nl_shuffle_sentences = false
+# Keep first sentence in place when shuffling (usually contains framing info)
+nl_keep_first_sentence = false
+
+# --- Full Caption Dropout (CFG Training) ---
+# Percentage of samples that train with empty caption (unconditional)
+caption_dropout_percent = 0.05
+
+# --- Caption Mode ---
+# Mode for combining tags and NL captions:
+#   'tags'  - Use tags only (default, backward compatible)
+#   'nl'    - Use NL captions only (from {name}_nl.txt files)
+#   'mixed' - Weighted random selection between variants
+caption_mode = 'tags'
+
+# Weights for mixed mode (must sum to 100, or will be normalized)
+# Only used when caption_mode = 'mixed'
+# mixed_weights = { tags = 50, nl = 10, tags_nl = 20, nl_tags = 20 }
+
+# --- Debug Options ---
+# Print detailed caption processing info
+debug_caption_processing = false
+# Debug output interval:
+#   0 = every sample
+#   N = every N samples
+#   -1 = first 10 samples only
+debug_caption_interval = 100
+
+
+# ============================================
+# LoRA Configuration (comment out for full finetune)
+# ============================================
+[adapter]
+type = 'lora'
+rank = 32
+dtype = 'bfloat16'
+
+# ============================================
+# Optimizer
+# ============================================
+[optimizer]
+type = 'adamw_optimi'
+lr = 2e-5
+betas = [0.9, 0.99]
+weight_decay = 0.01
+eps = 1e-8
+
+# ============================================
+# Monitoring
+# ============================================
+[monitoring]
+enable_wandb = false

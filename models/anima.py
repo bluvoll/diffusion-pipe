@@ -535,7 +535,7 @@ class AnimaPipeline(BasePipeline):
         self.model_config = self.config['model']
         self.offloader = ModelOffloader('dummy', [], 0, 0, True, torch.device('cuda'), False, debug=False)
         dtype = self.model_config['dtype']
-        self.cache_text_embeddings = self.model_config.get('cache_text_embeddings', True)
+        self.cache_text_embeddings = self.model_config.get('cache_text_embeddings', False)
 
         # Configure adapter target modules based on train_llm_adapter option
         train_llm_adapter = self.model_config.get('train_llm_adapter', False)

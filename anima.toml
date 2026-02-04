@@ -6,8 +6,8 @@ dataset = 'dataset.toml'
 
 # Training settings
 epochs = 50
-micro_batch_size_per_gpu = 5
-pipeline_stages = 2 #This shards your model across GPUs, without a fused optimizer, or fused optimizer groups, you need 33GB for batch size 1 Full Finetuning
+micro_batch_size_per_gpu = 12
+pipeline_stages = 1 #This shards your model across GPUs, without a fused optimizer, or fused optimizer groups, you need 33GB for batch size 1 Full Finetuning
 gradient_accumulation_steps = 4
 gradient_clipping = 1.0
 # Warmup steps = optimizer steps (after accumulation), not samples
@@ -16,7 +16,7 @@ warmup_steps = 10
 train_llm_adapter = false #this is like training Clip in SDXL, not the exact same but similar set to true if you know 
 
 # Save settings
-save_every_n_epochs = 1
+save_every_n_epochs = 5
 #checkpoint_every_n_minutes = 120
 activation_checkpointing = 'unsloth'
 save_dtype = 'bfloat16'
@@ -102,16 +102,16 @@ qwen_nf4 = true
 # qwen_fp8 = true
 
 # LoRA adapter configuration, with all of this commented this becomes FULL FINETUNING, now works with sharding across gpus.
-#[adapter]
-#type = 'lora'
-#rank = 32
-#dtype = 'bfloat16'
+[adapter]
+type = 'lora'
+rank = 32
+dtype = 'bfloat16'
 # Optional: initialize from existing LoRA
 # init_from_existing = '/path/to/existing_lora'
 
 [optimizer]
 type = 'AdamW8bitKahan'
-lr = 5e-6
+lr = 3e-5
 betas = [0.9, 0.99]
 weight_decay = 0.01
 eps = 1e-8
@@ -129,8 +129,8 @@ eps = 1e-8
 # weight_decay = 0.01
 # stabilize = false
 
-#[monitoring]
-#enable_wandb = false
-#wandb_api_key = ''
-#wandb_tracker_name = ''
-#wandb_run_name = ''
+[monitoring]
+enable_wandb = true
+wandb_api_key = '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'
+wandb_tracker_name = 'Anima-test'
+wandb_run_name = 'Kanojos-anima-test-LoRA'

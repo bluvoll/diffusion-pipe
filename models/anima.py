@@ -89,8 +89,8 @@ def _apply_tag_dropout(tags, dropout_percent, protected_indices, protected_tags)
     if len(droppable_indices) == 0:
         return tags, []
 
-    # Calculate how many to drop
-    num_to_drop = int(len(droppable_indices) * dropout_percent)
+    # Calculate how many to drop (use round for unbiased rounding)
+    num_to_drop = round(len(droppable_indices) * dropout_percent)
 
     # Ensure minimum survivors
     max_droppable = len(tags) - MIN_SURVIVING_TAGS
@@ -170,7 +170,20 @@ def _select_variant(caption_mode, mixed_weights, has_nl_caption):
     if caption_mode == "tags":
         return "tags"
     elif caption_mode == "nl":
-        return "nl" if has_nl_caption else "tags"
+        if has_nl_caption:
+            return "nl"
+        else:
+            # Warn user about fallback (rate-limited to avoid console spam)
+            if not hasattr(_select_variant, '_nl_fallback_count'):
+                _select_variant._nl_fallback_count = 0
+            _select_variant._nl_fallback_count += 1
+            if _select_variant._nl_fallback_count <= 5:
+                print(f"Warning: caption_mode='nl' but no *_nl.txt found for sample, "
+                      f"falling back to tags (warning {_select_variant._nl_fallback_count}/5)")
+            elif _select_variant._nl_fallback_count == 6:
+                print("Warning: Suppressing further NL fallback warnings. "
+                      "Check that your NL caption files have the '_nl.txt' suffix.")
+            return "tags"
     elif caption_mode == "mixed":
         # Build available variants with weights
         available = {"tags": mixed_weights.get("tags", 50)}
@@ -188,10 +201,12 @@ def _select_variant(caption_mode, mixed_weights, has_nl_caption):
         cumulative = 0
         for variant, weight in available.items():
             cumulative += weight
-            if r <= cumulative:
+            if r < cumulative:
                 return variant
 
-        return "tags"  # Fallback
+        # Fallback should never execute with correct math, but guard against
+        # floating-point edge cases by returning last variant instead of biasing to tags
+        return variant
     else:
         return "tags"  # Unknown mode fallback
 
@@ -200,24 +215,35 @@ def _construct_caption(variant, processed_tags, processed_nl):
     """
     Construct final caption string based on selected variant.
 
+    Handles empty strings gracefully to avoid malformed captions like ". text"
+    or "text. " when one component is empty.
+
     Args:
         variant: "tags", "nl", "tags_nl", or "nl_tags"
-        processed_tags: Processed tag string
-        processed_nl: Processed NL caption string
+        processed_tags: Processed tag string (may be empty)
+        processed_nl: Processed NL caption string (may be empty)
 
     Returns:
         Final caption string
     """
+    # Normalize empty/whitespace-only strings to empty
+    tags = processed_tags.strip() if processed_tags else ""
+    nl = processed_nl.strip() if processed_nl else ""
+
     if variant == "tags":
-        return processed_tags
+        return tags if tags else nl  # Fallback to NL if tags empty
     elif variant == "nl":
-        return processed_nl
+        return nl if nl else tags  # Fallback to tags if NL empty
     elif variant == "tags_nl":
-        return f"{processed_tags}. {processed_nl}"
+        if tags and nl:
+            return f"{tags}. {nl}"
+        return tags or nl  # Return whichever is non-empty
     elif variant == "nl_tags":
-        return f"{processed_nl}. {processed_tags}"
+        if tags and nl:
+            return f"{nl}. {tags}"
+        return nl or tags  # Return whichever is non-empty
     else:
-        return processed_tags  # Fallback
+        return tags or nl  # Fallback: return any non-empty component
 
 
 def _load_nl_caption(image_spec):
@@ -433,6 +459,20 @@ def _process_caption_full(
 
     # Step 6: Construct final caption
     final_caption = _construct_caption(variant, processed_tags, processed_nl)
+
+    # Step 7: Validate final caption is not empty
+    if not final_caption or not final_caption.strip():
+        # Both tags and NL were empty - fall back to original caption
+        if not hasattr(_process_caption_full, '_empty_caption_count'):
+            _process_caption_full._empty_caption_count = 0
+        _process_caption_full._empty_caption_count += 1
+        if _process_caption_full._empty_caption_count <= 5:
+            print(f"Warning: Caption processing produced empty result for sample {sample_idx}, "
+                  f"using original caption (warning {_process_caption_full._empty_caption_count}/5)")
+        elif _process_caption_full._empty_caption_count == 6:
+            print("Warning: Suppressing further empty caption warnings. "
+                  "Check your caption files for empty or whitespace-only content.")
+        final_caption = tags_str  # Use original caption as fallback
 
     if should_debug:
         debug_info['final_caption'] = final_caption

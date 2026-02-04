@@ -528,7 +528,7 @@ class AnimaPipeline(BasePipeline):
     name = 'anima'
     framerate = 16
     checkpointable_layers = ['TransformerLayer']
-    adapter_target_modules = ['Block', 'LLMAdapterTransformerBlock']
+    adapter_target_modules = ['Block']  # Default: don't train LLMAdapter
 
     def __init__(self, config):
         self.config = config
@@ -536,6 +536,14 @@ class AnimaPipeline(BasePipeline):
         self.offloader = ModelOffloader('dummy', [], 0, 0, True, torch.device('cuda'), False, debug=False)
         dtype = self.model_config['dtype']
         self.cache_text_embeddings = self.model_config.get('cache_text_embeddings', True)
+
+        # Configure adapter target modules based on train_llm_adapter option
+        train_llm_adapter = self.model_config.get('train_llm_adapter', False)
+        if train_llm_adapter:
+            self.adapter_target_modules = ['Block', 'LLMAdapterTransformerBlock']
+            print("Note: train_llm_adapter=true - LLMAdapter will be trained with LoRA")
+        else:
+            self.adapter_target_modules = ['Block']
 
         # === Caption Processing Config ===
         # Build a config dict for caption processing
@@ -930,32 +938,24 @@ class InitialLayer(nn.Module):
             assert len(text_inputs) == 3, f"Expected non-cached inputs (qwen_input_ids, qwen_attention_mask, t5_input_ids), got {len(text_inputs)} items."
             qwen_input_ids, qwen_attention_mask, t5_input_ids = text_inputs
 
-            # Check for empty prompts - return zero embeddings directly (matches diffusers behavior)
-            # Empty prompts have attention_mask sum of 1 (just the EOS/padding token)
-            lengths = qwen_attention_mask.sum(dim=1)
-            all_empty = (lengths <= 1).all().item()
+            # Always run through models - even for empty prompts
+            # (The zeros optimization breaks pipeline parallelism gradient flow)
+            with torch.no_grad():
+                qwen_embeds = _compute_qwen_embeddings(
+                    self.qwen_model,
+                    qwen_input_ids,
+                    qwen_attention_mask,
+                )
 
-            if all_empty:
-                # Return zeros directly without running through models (CFG optimization)
-                # target_dim=1024 for Anima's LLMAdapter
-                crossattn_emb = torch.zeros(batch_size, 512, 1024, device=target_device, dtype=target_dtype)
-            else:
-                with torch.no_grad():
-                    qwen_embeds = _compute_qwen_embeddings(
-                        self.qwen_model,
-                        qwen_input_ids,
-                        qwen_attention_mask,
-                    )
+            if qwen_embeds.device != target_device:
+                qwen_embeds = qwen_embeds.to(target_device)
+            if t5_input_ids.device != target_device:
+                t5_input_ids = t5_input_ids.to(target_device)
+            if t5_input_ids.dtype != torch.long:
+                t5_input_ids = t5_input_ids.long()
 
-                if qwen_embeds.device != target_device:
-                    qwen_embeds = qwen_embeds.to(target_device)
-                if t5_input_ids.device != target_device:
-                    t5_input_ids = t5_input_ids.to(target_device)
-                if t5_input_ids.dtype != torch.long:
-                    t5_input_ids = t5_input_ids.long()
-
-                # Process through LLM adapter to get final cross-attention embeddings
-                crossattn_emb = self.llm_adapter(qwen_embeds, t5_input_ids)
+            # Process through LLM adapter to get final cross-attention embeddings
+            crossattn_emb = self.llm_adapter(qwen_embeds, t5_input_ids)
 
         # Pad to 512 tokens if needed
         if crossattn_emb.shape[1] < 512:
@@ -975,7 +975,9 @@ class InitialLayer(nn.Module):
         t_embedding_B_T_D, adaln_lora_B_T_3D = self.t_embedder(timesteps_B_T)
         t_embedding_B_T_D = self.t_embedding_norm(t_embedding_B_T_D)
 
-        outputs = make_contiguous(x_B_T_H_W_D, t_embedding_B_T_D, crossattn_emb, rope_emb_L_1_1_D, adaln_lora_B_T_3D, timesteps_B_T)
+        # Note: timesteps_B_T is NOT included - it's only used here in InitialLayer
+        # Including it breaks pipeline parallelism (no gradient flows through unused tensors)
+        outputs = make_contiguous(x_B_T_H_W_D, t_embedding_B_T_D, crossattn_emb, rope_emb_L_1_1_D, adaln_lora_B_T_3D)
         for item in outputs:
             item.requires_grad_(True)
         return outputs
@@ -990,13 +992,13 @@ class TransformerLayer(nn.Module):
 
     @torch.autocast('cuda', dtype=AUTOCAST_DTYPE)
     def forward(self, inputs):
-        x_B_T_H_W_D, t_embedding_B_T_D, crossattn_emb, rope_emb_L_1_1_D, adaln_lora_B_T_3D, timesteps_B_T = inputs
+        x_B_T_H_W_D, t_embedding_B_T_D, crossattn_emb, rope_emb_L_1_1_D, adaln_lora_B_T_3D = inputs
 
         self.offloader.wait_for_block(self.block_idx)
         x_B_T_H_W_D = self.block(x_B_T_H_W_D, t_embedding_B_T_D, crossattn_emb, rope_emb_L_1_1_D=rope_emb_L_1_1_D, adaln_lora_B_T_3D=adaln_lora_B_T_3D)
         self.offloader.submit_move_blocks_forward(self.block_idx)
 
-        return make_contiguous(x_B_T_H_W_D, t_embedding_B_T_D, crossattn_emb, rope_emb_L_1_1_D, adaln_lora_B_T_3D, timesteps_B_T)
+        return make_contiguous(x_B_T_H_W_D, t_embedding_B_T_D, crossattn_emb, rope_emb_L_1_1_D, adaln_lora_B_T_3D)
 
 
 class FinalLayer(nn.Module):
@@ -1013,7 +1015,7 @@ class FinalLayer(nn.Module):
 
     @torch.autocast('cuda', dtype=AUTOCAST_DTYPE)
     def forward(self, inputs):
-        x_B_T_H_W_D, t_embedding_B_T_D, crossattn_emb, rope_emb_L_1_1_D, adaln_lora_B_T_3D, timesteps_B_T = inputs
+        x_B_T_H_W_D, t_embedding_B_T_D, crossattn_emb, rope_emb_L_1_1_D, adaln_lora_B_T_3D = inputs
         x_B_T_H_W_O = self.final_layer(x_B_T_H_W_D, t_embedding_B_T_D, adaln_lora_B_T_3D=adaln_lora_B_T_3D)
         net_output_B_C_T_H_W = self.unpatchify(x_B_T_H_W_O)
         return net_output_B_C_T_H_W

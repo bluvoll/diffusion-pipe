@@ -1,5 +1,5 @@
 # Example Anima training config
-# Anima is based on Cosmos-Predict2 with dual text encoders (Qwen3-0.6B + T5)
+# Anima is based on Cosmos-Predict2 with dual text encoders (Qwen3-0.6B + T5's Tokenizer)
 
 output_dir = '/path/to/training_runs/anima'
 dataset = 'path/to/dataset.toml'
@@ -10,6 +10,8 @@ micro_batch_size_per_gpu = 1
 pipeline_stages = 1
 gradient_accumulation_steps = 1
 gradient_clipping = 1.0
+# Warmup steps = optimizer steps (after accumulation), not samples
+# Total warmup samples = warmup_steps × micro_batch_size × accumulation_steps
 warmup_steps = 100
 activation_checkpointing = true
 
@@ -37,6 +39,12 @@ dtype = 'bfloat16'
 
 # Quantize Qwen to NF4 for lower VRAM usage
 # qwen_nf4 = true
+
+# Train LLMAdapter with LoRA (default: false)
+# The LLMAdapter bridges Qwen embeddings to the diffusion model.
+# Recommended to keep false for most LoRA training to preserve text understanding.
+# Only enable if you need the model to learn a specific captioning style.
+# train_llm_adapter = false
 
 # Timestep sampling
 timestep_sample_method = 'logit_normal'
@@ -81,8 +89,13 @@ caption_dropout_percent = 0.05
 #   'mixed' - Weighted random selection between variants
 caption_mode = 'tags'
 
-# Weights for mixed mode (must sum to 100, or will be normalized)
+# Weights for mixed mode (normalized automatically, don't need to sum to 100)
 # Only used when caption_mode = 'mixed'
+#   tags    = tags only ("1girl, blue hair, smile")
+#   nl      = NL caption only ("A girl with blue hair smiles warmly.")
+#   tags_nl = tags then NL ("1girl, blue hair. A girl with blue hair smiles.")
+#   nl_tags = NL then tags ("A girl with blue hair smiles. 1girl, blue hair")
+# If image has no {name}_nl.txt file, falls back to tags-only for that sample
 # mixed_weights = { tags = 50, nl = 10, tags_nl = 20, nl_tags = 20 }
 
 # --- Debug Options ---
@@ -96,7 +109,8 @@ debug_caption_interval = 100
 
 
 # ============================================
-# LoRA Configuration (comment out for full finetune)
+# LoRA Configuration
+# Comment out this section for full finetuning (works with sharding across GPUs)
 # ============================================
 [adapter]
 type = 'lora'
@@ -112,6 +126,31 @@ lr = 2e-5
 betas = [0.9, 0.99]
 weight_decay = 0.01
 eps = 1e-8
+# Alternative: 8-bit AdamW for lower memory
+# [optimizer]
+# type = 'AdamW8bitKahan'
+# lr = 2e-5
+# betas = [0.9, 0.99]
+# weight_decay = 0.01
+# stabilize = false
+
+
+# Alternative: CAME optimizer (Confidence-guided Adaptive Memory Efficient Optimization)
+# From pytorch_optimizer - memory-efficient alternative to AdamW with adaptive learning
+# Uses 3 betas: (momentum, variance, confidence) for improved stability
+# Recommended for large batch training and memory-constrained setups
+#
+# [optimizer]
+# type = 'CAME'
+# lr = 2e-4
+# betas = [0.9, 0.999, 0.9999]  # (momentum, variance, confidence)
+# weight_decay = 0.0
+# weight_decouple = true        # Decouple weight decay from gradient update
+# fixed_decay = false           # Use fixed weight decay (vs scaled by lr)
+# clip_threshold = 1.0          # Gradient clipping threshold
+# ams_bound = false             # Use AMSBound variant
+# eps1 = 1e-30                  # Epsilon for numerical stability (denominator)
+# eps2 = 1e-16                  # Epsilon for numerical stability (confidence)
 
 # ============================================
 # Monitoring

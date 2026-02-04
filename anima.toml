@@ -6,16 +6,19 @@ dataset = 'dataset.toml'
 
 # Training settings
 epochs = 50
-micro_batch_size_per_gpu = 1
-pipeline_stages = 1
-gradient_accumulation_steps = 1
+micro_batch_size_per_gpu = 5
+pipeline_stages = 2 #This shards your model across GPUs, without a fused optimizer, or fused optimizer groups, you need 33GB for batch size 1 Full Finetuning
+gradient_accumulation_steps = 4
 gradient_clipping = 1.0
-warmup_steps = 100
+# Warmup steps = optimizer steps (after accumulation), not samples
+# Total warmup samples = warmup_steps × micro_batch_size × accumulation_steps
+warmup_steps = 10
+train_llm_adapter = false #this is like training Clip in SDXL, not the exact same but similar set to true if you know 
 
 # Save settings
 save_every_n_epochs = 1
 #checkpoint_every_n_minutes = 120
-activation_checkpointing = true
+activation_checkpointing = 'unsloth'
 save_dtype = 'bfloat16'
 
 
@@ -55,21 +58,42 @@ shift = 3.0
 # Text embedding caching (recommended for training efficiency)
 # Set to false to enable training-time tag shuffling
 cache_text_embeddings = false
-shuffle_tags = true
+shuffle_tags = true #Shuffles tags and tags only.
+# Drop 10% of tags randomly (minimum 3 tags always survive)
 tag_dropout_percent = 0.10
+# Train 10% of samples with empty caption (for CFG/unconditional generation)
 caption_dropout_percent = 0.1
 caption_mode = "mixed"
-mixed_weights = { tags = 50, nl = 10, tags_nl = 20, nl_tags = 20 }
-nl_shuffle_sentences = true
-debug_caption_processing = true
-caching_batch_size = 5
+# Mixed mode weights (normalized automatically, don't need to sum to 100):
+#   tags    = tags only ("1girl, blue hair, smile")
+#   nl      = NL caption only ("A girl with blue hair smiles warmly.")
+#   tags_nl = tags then NL ("1girl, blue hair. A girl with blue hair smiles.")
+#   nl_tags = NL then tags ("A girl with blue hair smiles. 1girl, blue hair")
+# If image has no {name}_nl.txt file, falls back to tags-only for that sample
+mixed_weights = { tags = 50, nl = 10, tags_nl = 20, nl_tags = 20 } #These are percentages in mixed, so 50% pure tags, 10% pure NL, 20% tags + NL, 20% NL + Tags.
 
-# Training-time tag shuffling for danbooru-style captions
+# NL caption processing
+# Shuffle sentences in NL captions (splits on ". ")
+nl_shuffle_sentences = true
+# Keep first sentence in place when shuffling (usually contains framing/subject info)
+# nl_keep_first_sentence = false
+
+# Tag shuffling settings
 # NOTE: Requires cache_text_embeddings = false to work!
-# For cached embeddings, use cache_shuffle_num in your dataset config instead.
 tag_delimiter = ', '
-# Keep first N tags in place (useful for trigger words), shuffle the rest
-# keep_first_n_tags = 0
+# Keep first N tags in position when shuffling (useful for trigger words)
+# These tags are also protected from dropout
+# shuffle_keep_first_n = 1
+
+# Protected tags file - tags listed here are never dropped by tag_dropout
+# protected_tags_file = '/path/to/protected_tags.txt'
+
+# Debug caption processing
+debug_caption_processing = false
+# Debug output interval: 0=every sample, N=every N samples, -1=first 10 only
+# debug_caption_interval = 100
+
+caching_batch_size = 5
 
 # Optional: quantize Qwen model to NF4 for lower VRAM
 qwen_nf4 = true
@@ -77,21 +101,26 @@ qwen_nf4 = true
 # Optional: use FP8 for Qwen model weights
 # qwen_fp8 = true
 
-# LoRA adapter configuration
-[adapter]
-type = 'lora'
-rank = 32
-dtype = 'bfloat16'
+# LoRA adapter configuration, with all of this commented this becomes FULL FINETUNING, now works with sharding across gpus.
+#[adapter]
+#type = 'lora'
+#rank = 32
+#dtype = 'bfloat16'
 # Optional: initialize from existing LoRA
 # init_from_existing = '/path/to/existing_lora'
 
 [optimizer]
-type = 'adamw_optimi'
-lr = 5e-5
+type = 'AdamW8bitKahan'
+lr = 5e-6
 betas = [0.9, 0.99]
 weight_decay = 0.01
 eps = 1e-8
-
+# [optimizer] #Original diffusion-pipe optimizer 
+# type = 'adamw_optimi'
+# lr = 2e-5
+# betas = [0.9, 0.99]
+# weight_decay = 0.01
+# eps = 1e-8
 # Alternative: 8-bit AdamW for lower memory
 # [optimizer]
 # type = 'AdamW8bitKahan'

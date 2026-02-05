@@ -101,6 +101,19 @@ qwen_nf4 = true
 # Optional: use FP8 for Qwen model weights
 # qwen_fp8 = true
 
+# ============================================
+# Per-Component Learning Rates (Full Finetuning)
+# ============================================
+# Set different learning rates for different model components.
+# If not specified, all components use the optimizer's base lr.
+# Set to 0 to freeze that component entirely.
+#
+# self_attn_lr = 5e-6      # Self-attention layers
+# cross_attn_lr = 5e-6     # Cross-attention layers
+# mlp_lr = 5e-6            # MLP/feedforward layers
+# mod_lr = 5e-6            # AdaLN modulation layers
+# llm_adapter_lr = 1e-6    # LLMAdapter (lower LR recommended to preserve text understanding)
+
 # LoRA adapter configuration, with all of this commented this becomes FULL FINETUNING, now works with sharding across gpus.
 #[adapter]
 #type = 'lora'

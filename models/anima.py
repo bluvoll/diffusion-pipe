@@ -19,7 +19,7 @@ from accelerate.utils import set_module_tensor_to_device
 from models.base import BasePipeline, PreprocessMediaFile, make_contiguous
 from models.anima_modeling import Anima
 from models.cosmos_predict2 import get_dit_config, time_shift, get_lin_function, WanVAE, vae_encode
-from utils.common import load_state_dict, AUTOCAST_DTYPE
+from utils.common import load_state_dict, AUTOCAST_DTYPE, is_main_process
 from utils.offloading import ModelOffloader
 
 
@@ -790,6 +790,7 @@ class AnimaPipeline(BasePipeline):
         Returns a function that computes both:
         - Qwen3 embeddings (for LLMAdapter cross-attention context)
         - T5 token IDs (for LLMAdapter embedding input)
+        - Attention masks for proper padding handling in LLMAdapter
         """
         def fn(captions, is_video):
             # Get Qwen3 embeddings
@@ -805,8 +806,9 @@ class AnimaPipeline(BasePipeline):
 
             return {
                 'qwen_embeds': qwen_embeds,
+                'qwen_attention_mask': qwen_encoding.attention_mask,  # Source attention mask
                 't5_input_ids': t5_encoding.input_ids,
-                't5_attention_mask': t5_encoding.attention_mask,
+                't5_attention_mask': t5_encoding.attention_mask,  # Target attention mask
             }
         return fn
 
@@ -815,8 +817,13 @@ class AnimaPipeline(BasePipeline):
         mask = inputs['mask']
 
         if self.cache_text_embeddings:
-            qwen_inputs = (inputs['qwen_embeds'],)
+            # Cached mode: embeddings pre-computed, pass with attention masks
+            qwen_inputs = (
+                inputs['qwen_embeds'],
+                inputs['qwen_attention_mask'],  # Source attention mask for LLMAdapter
+            )
             t5_input_ids = inputs['t5_input_ids']
+            t5_attention_mask = inputs['t5_attention_mask']  # Target attention mask for LLMAdapter
         else:
             # Compute on-the-fly with full caption processing
             captions = inputs['caption']
@@ -860,6 +867,7 @@ class AnimaPipeline(BasePipeline):
             qwen_inputs = (qwen_encoding.input_ids, qwen_encoding.attention_mask)
             t5_encoding = _tokenize_t5(self.t5_tokenizer, captions)
             t5_input_ids = t5_encoding.input_ids
+            t5_attention_mask = t5_encoding.attention_mask
 
         bs, channels, num_frames, h, w = latents.shape
 
@@ -898,7 +906,7 @@ class AnimaPipeline(BasePipeline):
         noisy_latents = (1 - t_expanded)*latents + t_expanded*noise
         target = noise - latents
 
-        return (noisy_latents, t.view(-1, 1), *qwen_inputs, t5_input_ids), (target, mask)
+        return (noisy_latents, t.view(-1, 1), *qwen_inputs, t5_input_ids, t5_attention_mask), (target, mask)
 
     def to_layers(self):
         transformer = self.transformer
@@ -936,6 +944,77 @@ class AnimaPipeline(BasePipeline):
         self.offloader.set_forward_only(True)
         self.offloader.prepare_block_devices_before_forward()
 
+    def get_param_groups(self, parameters):
+        """
+        Separate parameters into groups for per-component learning rates.
+
+        Allows setting different learning rates for:
+        - self_attn: Self-attention layers
+        - cross_attn: Cross-attention layers
+        - mlp: MLP/feedforward layers
+        - mod: AdaLN modulation layers
+        - llm_adapter: LLMAdapter layers (bridges Qwen embeddings to diffusion model)
+        - base: Everything else
+
+        Config options (in [model] section):
+        - self_attn_lr: Learning rate for self-attention (default: base lr)
+        - cross_attn_lr: Learning rate for cross-attention (default: base lr)
+        - mlp_lr: Learning rate for MLP layers (default: base lr)
+        - mod_lr: Learning rate for modulation layers (default: base lr)
+        - llm_adapter_lr: Learning rate for LLMAdapter (default: base lr)
+
+        Set any of these to 0 to freeze those parameters.
+        """
+        base_params, self_attn_params, cross_attn_params, mlp_params, mod_params, llm_adapter_params = [], [], [], [], [], []
+
+        for p in parameters:
+            name = p.original_name
+            if 'llm_adapter' in name:
+                llm_adapter_params.append(p)
+            elif '.self_attn' in name:
+                self_attn_params.append(p)
+            elif '.cross_attn' in name:
+                cross_attn_params.append(p)
+            elif '.mlp' in name:
+                mlp_params.append(p)
+            elif '.adaln_modulation' in name:
+                mod_params.append(p)
+            else:
+                base_params.append(p)
+
+        base_lr = self.config['optimizer'].get('lr', None)
+        self_attn_lr = self.model_config.get('self_attn_lr', base_lr)
+        cross_attn_lr = self.model_config.get('cross_attn_lr', base_lr)
+        mlp_lr = self.model_config.get('mlp_lr', base_lr)
+        mod_lr = self.model_config.get('mod_lr', base_lr)
+        llm_adapter_lr = self.model_config.get('llm_adapter_lr', base_lr)
+
+        if is_main_process():
+            print(f'Per-component learning rates:')
+            print(f'  base_lr={base_lr}, self_attn_lr={self_attn_lr}, cross_attn_lr={cross_attn_lr}')
+            print(f'  mlp_lr={mlp_lr}, mod_lr={mod_lr}, llm_adapter_lr={llm_adapter_lr}')
+            print(f'Parameter counts:')
+            print(f'  base: {len(base_params)}, self_attn: {len(self_attn_params)}, cross_attn: {len(cross_attn_params)}')
+            print(f'  mlp: {len(mlp_params)}, mod: {len(mod_params)}, llm_adapter: {len(llm_adapter_params)}')
+
+        param_groups = []
+        for lr, params in [
+            (base_lr, base_params),
+            (self_attn_lr, self_attn_params),
+            (cross_attn_lr, cross_attn_params),
+            (mlp_lr, mlp_params),
+            (mod_lr, mod_params),
+            (llm_adapter_lr, llm_adapter_params),
+        ]:
+            if lr == 0:
+                # Freeze these parameters
+                for p in params:
+                    p.requires_grad_(False)
+            elif len(params) > 0:
+                param_groups.append({'params': params, 'lr': lr})
+
+        return param_groups
+
 
 class InitialLayer(nn.Module):
     def __init__(self, model, qwen_model, qwen_tokenizer, t5_tokenizer):
@@ -962,21 +1041,32 @@ class InitialLayer(nn.Module):
         # If qwen_model is not None, we need to compute embeddings on-the-fly.
         # In cached mode, qwen_embeds is already computed and passed through.
         if self.qwen_model is None:
-            assert len(text_inputs) == 2, f"Expected cached inputs (qwen_embeds, t5_input_ids), got {len(text_inputs)} items."
-            qwen_embeds, t5_input_ids = text_inputs
+            # Cached mode: (qwen_embeds, qwen_attention_mask, t5_input_ids, t5_attention_mask)
+            assert len(text_inputs) == 4, f"Expected cached inputs (qwen_embeds, qwen_attention_mask, t5_input_ids, t5_attention_mask), got {len(text_inputs)} items."
+            qwen_embeds, qwen_attention_mask, t5_input_ids, t5_attention_mask = text_inputs
 
             if qwen_embeds.device != target_device:
                 qwen_embeds = qwen_embeds.to(target_device)
+            if qwen_attention_mask.device != target_device:
+                qwen_attention_mask = qwen_attention_mask.to(target_device)
             if t5_input_ids.device != target_device:
                 t5_input_ids = t5_input_ids.to(target_device)
+            if t5_attention_mask.device != target_device:
+                t5_attention_mask = t5_attention_mask.to(target_device)
             if t5_input_ids.dtype != torch.long:
                 t5_input_ids = t5_input_ids.long()
 
-            # Process through LLM adapter
-            crossattn_emb = self.llm_adapter(qwen_embeds, t5_input_ids)
+            # Process through LLM adapter with attention masks for proper padding handling
+            crossattn_emb = self.llm_adapter(
+                qwen_embeds,
+                t5_input_ids,
+                target_attention_mask=t5_attention_mask,
+                source_attention_mask=qwen_attention_mask,
+            )
         else:
-            assert len(text_inputs) == 3, f"Expected non-cached inputs (qwen_input_ids, qwen_attention_mask, t5_input_ids), got {len(text_inputs)} items."
-            qwen_input_ids, qwen_attention_mask, t5_input_ids = text_inputs
+            # Non-cached mode: (qwen_input_ids, qwen_attention_mask, t5_input_ids, t5_attention_mask)
+            assert len(text_inputs) == 4, f"Expected non-cached inputs (qwen_input_ids, qwen_attention_mask, t5_input_ids, t5_attention_mask), got {len(text_inputs)} items."
+            qwen_input_ids, qwen_attention_mask, t5_input_ids, t5_attention_mask = text_inputs
 
             # Always run through models - even for empty prompts
             # (The zeros optimization breaks pipeline parallelism gradient flow)
@@ -989,13 +1079,25 @@ class InitialLayer(nn.Module):
 
             if qwen_embeds.device != target_device:
                 qwen_embeds = qwen_embeds.to(target_device)
+            if qwen_attention_mask.device != target_device:
+                qwen_attention_mask = qwen_attention_mask.to(target_device)
             if t5_input_ids.device != target_device:
                 t5_input_ids = t5_input_ids.to(target_device)
+            if t5_attention_mask.device != target_device:
+                t5_attention_mask = t5_attention_mask.to(target_device)
             if t5_input_ids.dtype != torch.long:
                 t5_input_ids = t5_input_ids.long()
 
-            # Process through LLM adapter to get final cross-attention embeddings
-            crossattn_emb = self.llm_adapter(qwen_embeds, t5_input_ids)
+            # Process through LLM adapter with attention masks for proper padding handling
+            crossattn_emb = self.llm_adapter(
+                qwen_embeds,
+                t5_input_ids,
+                target_attention_mask=t5_attention_mask,
+                source_attention_mask=qwen_attention_mask,
+            )
+
+        # Zero out padding positions after LLMAdapter (ensures no padding info leaks to cross-attention)
+        crossattn_emb[~t5_attention_mask.bool()] = 0
 
         # Pad to 512 tokens if needed
         if crossattn_emb.shape[1] < 512:

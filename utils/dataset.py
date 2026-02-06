@@ -368,10 +368,21 @@ class ConcatenatedBatchedDataset:
         return [self.datasets[i.item()][j.item()] for i, j in self.iteration_order[start_idx : end_idx]]
 
     def _make_divisible_by(self, n):
+        current_length = len(self.iteration_order)
+        if current_length == 0:
+            return
+        if current_length < n:
+            # Tile the iteration order so the bucket fills at least one batch
+            repeats_needed = math.ceil(n / current_length)
+            self.iteration_order = np.tile(self.iteration_order, (repeats_needed, 1))
+            if is_main_process():
+                logger.warning(
+                    f"Size bucket {self.datasets[0].size_bucket} has only {current_length} samples "
+                    f"but needs {n} for a full batch. Repeating images {repeats_needed}x "
+                    f"(total {len(self.iteration_order)}) to avoid dropping the bucket."
+                )
         new_length = (len(self.iteration_order) // n) * n
         self.iteration_order = self.iteration_order[:new_length]
-        if new_length == 0 and is_main_process():
-            logger.warning(f"size bucket {self.datasets[0].size_bucket} is being completely dropped because it doesn't have enough images")
 
 
 class ARBucketDataset:

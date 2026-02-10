@@ -19,7 +19,7 @@ from accelerate.utils import set_module_tensor_to_device
 from models.base import BasePipeline, PreprocessMediaFile, make_contiguous
 from models.anima_modeling import Anima
 from models.cosmos_predict2 import get_dit_config, time_shift, get_lin_function, WanVAE, vae_encode
-from utils.common import load_state_dict, AUTOCAST_DTYPE, is_main_process
+from utils.common import load_state_dict, AUTOCAST_DTYPE, is_main_process, iterate_safetensors
 from utils.offloading import ModelOffloader
 
 
@@ -664,31 +664,42 @@ class AnimaPipeline(BasePipeline):
             self.qwen_tokenizer.pad_token = self.qwen_tokenizer.eos_token
 
         # Load Qwen3-0.6B model for text encoding
-        qwen_config = AutoConfig.from_pretrained(qwen_path, trust_remote_code=True, local_files_only=True)
+        if os.path.isdir(qwen_path):
+            # Load from HuggingFace directory format
+            qwen_config = AutoConfig.from_pretrained(qwen_path, trust_remote_code=True, local_files_only=True)
 
-        if self.model_config.get('qwen_nf4', False):
-            quantization_config = transformers.BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_quant_type='nf4',
-                bnb_4bit_compute_dtype=dtype,
+            if self.model_config.get('qwen_nf4', False):
+                quantization_config = transformers.BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_quant_type='nf4',
+                    bnb_4bit_compute_dtype=dtype,
+                )
+            else:
+                quantization_config = None
+
+            qwen_model = AutoModelForCausalLM.from_pretrained(
+                qwen_path,
+                config=qwen_config,
+                torch_dtype=dtype,
+                local_files_only=True,
+                quantization_config=quantization_config,
+                trust_remote_code=True,
             )
+
+            if quantization_config is None and self.model_config.get('qwen_fp8', False):
+                for name, p in qwen_model.named_parameters():
+                    if p.ndim == 2:
+                        p.data = p.data.to(torch.float8_e4m3fn)
         else:
-            quantization_config = None
+            # Load from single safetensors file (Anima format)
+            # Use bundled Qwen3-0.6B config
+            qwen_config = transformers.Qwen3Config.from_pretrained('configs/qwen3_06b', local_files_only=True)
+            with init_empty_weights():
+                qwen_model = transformers.Qwen3ForCausalLM(qwen_config)
+            for key, tensor in iterate_safetensors(qwen_path):
+                set_module_tensor_to_device(qwen_model, key, device='cpu', dtype=dtype, value=tensor)
 
-        self.qwen_model = AutoModelForCausalLM.from_pretrained(
-            qwen_path,
-            config=qwen_config,
-            torch_dtype=dtype,
-            local_files_only=True,
-            quantization_config=quantization_config,
-            trust_remote_code=True,
-        )
-
-        if quantization_config is None and self.model_config.get('qwen_fp8', False):
-            for name, p in self.qwen_model.named_parameters():
-                if p.ndim == 2:
-                    p.data = p.data.to(torch.float8_e4m3fn)
-
+        self.qwen_model = qwen_model
         self.qwen_model.requires_grad_(False)
 
     def _validate_caption_config(self):

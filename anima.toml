@@ -5,22 +5,20 @@ output_dir = '/home/bluvoll/anima-test'
 dataset = 'dataset.toml'
 
 # Training settings
-epochs = 50
-micro_batch_size_per_gpu = 5
-pipeline_stages = 2 #This shards your model across GPUs, without a fused optimizer, or fused optimizer groups, you need 33GB for batch size 1 Full Finetuning
-gradient_accumulation_steps = 4
+epochs = 20
+micro_batch_size_per_gpu = 24
+pipeline_stages = 1 #This shards your model across GPUs, without a fused optimizer, or fused optimizer groups, you need 33GB for batch size 1 Full Finetuning
+gradient_accumulation_steps = 1
 gradient_clipping = 1.0
 # Warmup steps = optimizer steps (after accumulation), not samples
 # Total warmup samples = warmup_steps × micro_batch_size × accumulation_steps
 warmup_steps = 10
-train_llm_adapter = false #this is like training Clip in SDXL, not the exact same but similar set to true if you know 
-
 # Save settings
 save_every_n_epochs = 1
 #checkpoint_every_n_minutes = 120
 activation_checkpointing = 'unsloth'
 save_dtype = 'bfloat16'
-
+caching_batch_size = 5
 
 # Block swapping for lower VRAM usage (optional)
 # blocks_to_swap = 10
@@ -29,7 +27,7 @@ save_dtype = 'bfloat16'
 type = 'anima'
 
 # Anima transformer checkpoint (contains both MiniTrainDIT and LLMAdapter weights)
-transformer_path = '/home/bluvoll/diffusion-pipe/anima/split_files/diffusion_models/anima-preview.safetensors'
+transformer_path = '/home/bluvoll/ComfyUI/models/diffusion_models/anima-preview2.safetensors'
 
 # VAE - Qwen Image VAE (16 channel latent space)
 # Use the VAE from Qwen-Image model
@@ -51,7 +49,6 @@ dtype = 'bfloat16'
 timestep_sample_method = 'logit_normal'
 # Sigmoid scale for logit_normal sampling
 sigmoid_scale = 1.0
-
 # Optional: shift parameter for timestep sampling
 shift = 3.0
 
@@ -93,7 +90,8 @@ debug_caption_processing = false
 # Debug output interval: 0=every sample, N=every N samples, -1=first 10 only
 # debug_caption_interval = 100
 
-caching_batch_size = 5
+train_llm_adapter = false  # Like training CLIP in SDXL, set to true if you know what you're doing
+train_adaln = false        # Exclude AdaLN modulation layers from LoRA for stability
 
 # Optional: quantize Qwen model to NF4 for lower VRAM
 qwen_nf4 = true
@@ -115,32 +113,30 @@ qwen_nf4 = true
 # llm_adapter_lr = 1e-6    # LLMAdapter (lower LR recommended to preserve text understanding)
 
 # LoRA adapter configuration, with all of this commented this becomes FULL FINETUNING, now works with sharding across gpus.
-#[adapter]
-#type = 'lora'
-#rank = 32
-#dtype = 'bfloat16'
+[adapter]
+type = 'lora'
+rank = 8
+dtype = 'bfloat16'
 # Optional: initialize from existing LoRA
 # init_from_existing = '/path/to/existing_lora'
 
 [optimizer]
-type = 'AdamW8bitKahan'
-lr = 5e-6
-betas = [0.9, 0.99]
+type = 'Adopt_Adv'
+lr = 4e-4
 weight_decay = 0.01
-eps = 1e-8
-# [optimizer] #Original diffusion-pipe optimizer 
-# type = 'adamw_optimi'
-# lr = 2e-5
+use_atan2 = true
+cautious_mask = true
+stochastic_rounding = true
+nnmf_factor = true
+vector_reshape = true
+cautious_wd = true
+
+# [optimizer]  # AdamW8bitKahan alternative
+# type = 'AdamW8bitKahan'
+# lr = 5e-6
 # betas = [0.9, 0.99]
 # weight_decay = 0.01
 # eps = 1e-8
-# Alternative: 8-bit AdamW for lower memory
-# [optimizer]
-# type = 'AdamW8bitKahan'
-# lr = 2e-5
-# betas = [0.9, 0.99]
-# weight_decay = 0.01
-# stabilize = false
 
 #[monitoring]
 #enable_wandb = false

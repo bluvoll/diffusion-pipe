@@ -659,6 +659,9 @@ if __name__ == '__main__':
         elif optim_type_lower == 'genericoptim':
             from optimizers import generic_optim
             klass = generic_optim.GenericOptim
+        elif optim_type_lower == 'adopt_adv':
+            from adv_optm import Adopt_adv
+            klass = Adopt_adv
         else:
             import pytorch_optimizer
             klass = getattr(pytorch_optimizer, optim_type)

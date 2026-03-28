@@ -578,12 +578,15 @@ class AnimaPipeline(BasePipeline):
         self.cache_text_embeddings = self.model_config.get('cache_text_embeddings', True)
 
         # Configure adapter target modules based on train_llm_adapter option
-        train_llm_adapter = self.model_config.get('train_llm_adapter', False)
-        if train_llm_adapter:
+        self.train_llm_adapter = self.model_config.get('train_llm_adapter', False)
+        if self.train_llm_adapter:
             self.adapter_target_modules = ['Block', 'LLMAdapterTransformerBlock']
             print("Note: train_llm_adapter=true - LLMAdapter will be trained with LoRA")
         else:
             self.adapter_target_modules = ['Block']
+
+        # Option to exclude AdaLN modulation layers from LoRA training
+        self.train_adaln = self.model_config.get('train_adaln', True)
 
         # === Caption Processing Config ===
         # Build a config dict for caption processing
@@ -771,8 +774,48 @@ class AnimaPipeline(BasePipeline):
         else:
             return []
 
+    def configure_adapter(self, adapter_config):
+        # Call base implementation first
+        super().configure_adapter(adapter_config)
+
+        if not self.train_adaln:
+            # Remove AdaLN modulation layers from LoRA targets by disabling their gradients
+            adaln_count = 0
+            for name, p in self.transformer.named_parameters():
+                if p.requires_grad and 'adaln_modulation' in name:
+                    p.requires_grad = False
+                    adaln_count += 1
+            print(f"Note: train_adaln=false - Disabled {adaln_count} AdaLN LoRA parameters")
+
+        if not self.train_llm_adapter:
+            # Safety: ensure no LLMAdapter LoRA params are trainable
+            adapter_count = 0
+            for name, p in self.transformer.named_parameters():
+                if p.requires_grad and 'llm_adapter' in name:
+                    p.requires_grad = False
+                    adapter_count += 1
+            if adapter_count > 0:
+                print(f"Note: train_llm_adapter=false - Disabled {adapter_count} LLMAdapter LoRA parameters")
+
     def save_adapter(self, save_dir, peft_state_dict):
         self.peft_config.save_pretrained(save_dir)
+
+        # Strip LLMAdapter LoRA weights when not training the adapter
+        if not self.train_llm_adapter:
+            before = len(peft_state_dict)
+            peft_state_dict = {k: v for k, v in peft_state_dict.items() if 'llm_adapter' not in k}
+            stripped = before - len(peft_state_dict)
+            if stripped > 0:
+                print(f"Stripped {stripped} LLMAdapter LoRA keys from saved adapter")
+
+        # Strip AdaLN LoRA weights when not training AdaLN
+        if not self.train_adaln:
+            before = len(peft_state_dict)
+            peft_state_dict = {k: v for k, v in peft_state_dict.items() if 'adaln_modulation' not in k}
+            stripped = before - len(peft_state_dict)
+            if stripped > 0:
+                print(f"Stripped {stripped} AdaLN LoRA keys from saved adapter")
+
         # ComfyUI format
         peft_state_dict = {'diffusion_model.'+k: v for k, v in peft_state_dict.items()}
         safetensors.torch.save_file(peft_state_dict, save_dir / 'adapter_model.safetensors', metadata={'format': 'pt'})

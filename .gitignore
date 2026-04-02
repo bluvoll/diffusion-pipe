@@ -162,3 +162,5 @@ cython_debug/
 #.idea/
 anima/
 qwen0.6/
+.codex
+.claude/

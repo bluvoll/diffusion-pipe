@@ -1,0 +1,47 @@
+output_dir = '/home/bluvoll/diffusion-pipe/output/qwen-edit'
+dataset = '/home/bluvoll/diffusion-pipe/dataset-edit.toml'
+
+# training settings
+epochs = 25
+micro_batch_size_per_gpu = 1
+pipeline_stages = 2
+gradient_accumulation_steps = 4
+gradient_clipping = 1
+
+# misc settings
+save_every_n_epochs = 1
+#checkpoint_every_n_minutes = 120
+activation_checkpointing = true
+#partition_method = 'parameters'
+#blocks_to_swap = 8
+save_dtype = 'bfloat16'
+timestep_sample_method = 'logit_normal'
+# Sigmoid scale for logit_normal sampling
+sigmoid_scale = 1.0
+# Optional: shift parameter for timestep sampling
+shift = 2.0
+caching_batch_size = 1
+steps_per_print = 1
+
+[model]
+type = 'qwen_image'
+diffusers_path = 'qwen-edit'
+dtype = 'bfloat16'
+transformer_dtype = 'float8'
+timestep_sample_method = 'logit_normal'
+# Sigmoid scale for logit_normal sampling
+sigmoid_scale = 1.0
+# Optional: shift parameter for timestep sampling
+shift = 3.0
+
+[adapter]
+type = 'lora'
+rank = 26
+dtype = 'bfloat16'
+
+[optimizer]
+type = 'AdamW8bitKahan'
+lr = 5e-5
+betas = [0.9, 0.999]
+weight_decay = 0.01
+eps = 1e-8

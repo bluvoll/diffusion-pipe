@@ -662,6 +662,9 @@ if __name__ == '__main__':
         elif optim_type_lower == 'adopt_adv':
             from adv_optm import Adopt_adv
             klass = Adopt_adv
+        elif optim_type_lower == 'fftdescent':
+            from optimizers.fftdescent import FFTDescent
+            klass = FFTDescent
         else:
             import pytorch_optimizer
             klass = getattr(pytorch_optimizer, optim_type)

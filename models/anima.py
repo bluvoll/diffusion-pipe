@@ -32,6 +32,43 @@ MIN_SURVIVING_TAGS = 3
 DEFAULT_MIXED_WEIGHTS = {'tags': 50, 'nl': 10, 'tags_nl': 20, 'nl_tags': 20}
 
 
+# ---------------------------------------------------------------------------
+# Cosine Optimal Transport for Rectified Flow (--flow_use_ot)
+# ---------------------------------------------------------------------------
+
+def cosine_optimal_transport(X: torch.Tensor, Y: torch.Tensor, backend: str = "auto"):
+    """Compute an optimal assignment under cosine distance.
+    Returns (cost_matrix, (row_indices, col_indices))."""
+    X_norm = X / torch.norm(X, dim=1, keepdim=True)
+    Y_norm = Y / torch.norm(Y, dim=1, keepdim=True)
+    cost = -torch.mm(X_norm, Y_norm.t())
+
+    if backend == "cuda":
+        return _cuda_assignment(cost)
+    if backend == "scipy":
+        return _scipy_assignment(cost)
+    try:
+        return _cuda_assignment(cost)
+    except (ImportError, RuntimeError):
+        return _scipy_assignment(cost)
+
+
+def _cuda_assignment(cost: torch.Tensor):
+    from torch_linear_assignment import assignment_to_indices, batch_linear_assignment
+    assignment = batch_linear_assignment(cost.unsqueeze(0))
+    row_idx, col_idx = assignment_to_indices(assignment)
+    return cost, (row_idx, col_idx)
+
+
+def _scipy_assignment(cost: torch.Tensor):
+    from scipy.optimize import linear_sum_assignment
+    cost_np = cost.to(torch.float32).detach().cpu().numpy()
+    row_ind, col_ind = linear_sum_assignment(cost_np)
+    row = torch.from_numpy(row_ind).to(cost.device, torch.long)
+    col = torch.from_numpy(col_ind).to(cost.device, torch.long)
+    return cost, (row, col)
+
+
 def _load_protected_tags(filepath):
     """
     Load protected tags from file.
@@ -956,11 +993,23 @@ class AnimaPipeline(BasePipeline):
             t = time_shift(mu, 1.0, t)
 
         noise = torch.randn_like(latents)
+
+        # Cosine Optimal Transport: reorder noise so each latent pairs with its
+        # most similar noise vector (straighter flow trajectories).
+        if self.model_config.get('flow_use_ot', False) and bs > 1:
+            with torch.no_grad():
+                lat_flat = latents.reshape(bs, -1)
+                noise_flat = noise.reshape(bs, -1)
+                _, (_, col_indices) = cosine_optimal_transport(lat_flat, noise_flat)
+                noise = noise[col_indices.squeeze(0)]
+
         t_expanded = t.view(-1, 1, 1, 1, 1)
         noisy_latents = (1 - t_expanded)*latents + t_expanded*noise
         target = noise - latents
 
-        return (noisy_latents, t.view(-1, 1), *qwen_inputs, t5_input_ids, t5_attention_mask), (target, mask)
+        # Pack noise and latents into label for contrastive flow matching loss.
+        # Loss function will unpack them if cfm is enabled, ignore otherwise.
+        return (noisy_latents, t.view(-1, 1), *qwen_inputs, t5_input_ids, t5_attention_mask), (target, mask, noise, latents)
 
     def to_layers(self):
         transformer = self.transformer
@@ -1068,6 +1117,45 @@ class AnimaPipeline(BasePipeline):
                 param_groups.append({'params': params, 'lr': lr})
 
         return param_groups
+
+    def get_loss_fn(self):
+        cfm_enabled = self.model_config.get('cfm_enabled', False)
+        cfm_lambda = self.model_config.get('cfm_lambda', 0.05)
+        use_pseudo_huber = 'pseudo_huber_c' in self.config
+        pseudo_huber_c = self.config.get('pseudo_huber_c', None)
+
+        def loss_fn(output, label):
+            target, mask, noise, latents = label
+            with torch.autocast('cuda', enabled=False):
+                output = output.to(torch.float32)
+                target = target.to(output.device, torch.float32)
+                if use_pseudo_huber:
+                    c = pseudo_huber_c
+                    loss = torch.sqrt((output - target)**2 + c**2) - c
+                else:
+                    loss = F.mse_loss(output, target, reduction='none')
+                if mask.numel() > 0:
+                    mask = mask.to(output.device, torch.float32)
+                    loss *= mask
+                loss = loss.mean()
+
+                # Contrastive Flow Matching: push predictions away from
+                # invalid cross-sample velocity targets.
+                if cfm_enabled and latents.size(0) > 1:
+                    noise = noise.to(output.device, torch.float32)
+                    latents = latents.to(output.device, torch.float32)
+                    negative_latents = latents.roll(1, 0)
+                    negative_noise = noise.roll(-1, 0)
+                    target_negative = negative_noise - negative_latents
+                    loss_contrastive = F.mse_loss(
+                        output, target_negative, reduction='none'
+                    )
+                    if mask.numel() > 0:
+                        loss_contrastive *= mask
+                    loss = loss - cfm_lambda * loss_contrastive.mean()
+
+            return loss
+        return loss_fn
 
 
 class InitialLayer(nn.Module):

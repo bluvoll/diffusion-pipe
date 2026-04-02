@@ -1,0 +1,14 @@
+resolutions = [1024]
+
+enable_ar_bucket = true
+min_ar = 0.5
+max_ar = 2.0
+num_ar_buckets = 9
+
+num_repeats = 1
+
+[[directory]]
+# Target images (edited results) + .txt caption files with edit instructions
+path = '/home/bluvoll/Documentos/BE Processed/path/'
+# Control images (originals), matched by filename stem
+control_path = '/home/bluvoll/Documentos/BE Processed/control/'

@@ -5,8 +5,8 @@ output_dir = '/home/bluvoll/anima-test'
 dataset = 'dataset.toml'
 
 # Training settings
-epochs = 20
-micro_batch_size_per_gpu = 24
+epochs = 25
+micro_batch_size_per_gpu = 12
 pipeline_stages = 1 #This shards your model across GPUs, without a fused optimizer, or fused optimizer groups, you need 33GB for batch size 1 Full Finetuning
 gradient_accumulation_steps = 1
 gradient_clipping = 1.0
@@ -52,14 +52,24 @@ sigmoid_scale = 1.0
 # Optional: shift parameter for timestep sampling
 shift = 3.0
 
+# Cosine Optimal Transport: reorder noise within each batch to pair similar
+# latent-noise directions (straighter flow trajectories, faster convergence).
+# Requires: pip install torch-linear-assignment (CUDA) or scipy (CPU fallback)
+# flow_use_ot = true
+
+# Contrastive Flow Matching (ΔFM): adds a repulsion term that pushes
+# predictions away from invalid cross-sample velocity targets.
+# cfm_enabled = true
+# cfm_lambda = 0.05   # paper default; higher = stronger repulsion
+
 # Text embedding caching (recommended for training efficiency)
 # Set to false to enable training-time tag shuffling
 cache_text_embeddings = false
 shuffle_tags = true #Shuffles tags and tags only.
 # Drop 10% of tags randomly (minimum 3 tags always survive)
-tag_dropout_percent = 0.10
+tag_dropout_percent = 0.01
 # Train 10% of samples with empty caption (for CFG/unconditional generation)
-caption_dropout_percent = 0.1
+caption_dropout_percent = 0.05
 caption_mode = "mixed"
 # Mixed mode weights (normalized automatically, don't need to sum to 100):
 #   tags    = tags only ("1girl, blue hair, smile")
@@ -83,7 +93,7 @@ tag_delimiter = ', '
 # shuffle_keep_first_n = 1
 
 # Protected tags file - tags listed here are never dropped by tag_dropout
-# protected_tags_file = '/path/to/protected_tags.txt'
+protected_tags_file = '/path/to/protected_tags.txt'
 
 # Debug caption processing
 debug_caption_processing = false
@@ -115,15 +125,15 @@ qwen_nf4 = true
 # LoRA adapter configuration, with all of this commented this becomes FULL FINETUNING, now works with sharding across gpus.
 [adapter]
 type = 'lora'
-rank = 8
+rank = 16
 dtype = 'bfloat16'
 # Optional: initialize from existing LoRA
 # init_from_existing = '/path/to/existing_lora'
 
 [optimizer]
 type = 'Adopt_Adv'
-lr = 4e-4
-weight_decay = 0.01
+lr = 6e-5
+weight_decay = 0.1
 use_atan2 = true
 cautious_mask = true
 stochastic_rounding = true

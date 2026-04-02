@@ -5,7 +5,7 @@
 # as many times as the length of this list.
 # If you just want to use predetermined (width, height, frames) size buckets, see the example cosmos_dataset.toml
 # file for how you can do that.
-resolutions = [512]
+resolutions = [768,1024]
 
 # You can give resolutions as (width, height) pairs also. This doesn't do anything different, it's just
 # another way of specifying the area(s) (i.e. total number of pixels) you want to train on.
@@ -46,33 +46,10 @@ num_ar_buckets = 7
 [[directory]]
 # Path to directory of images/videos, and corresponding caption files. The caption files should match the media file name, but with a .txt extension.
 # A missing caption file will log a warning, but then just train using an empty caption.
-path = '/home/bluvoll/Descargas/Mayte-Avencri/Best-Images/'
+path = '/home/bluvoll/Escritorio/data-upload-chromav4-exp/baking/kawahagi-tei/'
 
 num_repeats = 1
-[[directory]]
-# Path to directory of images/videos, and corresponding caption files. The caption files should match the media file name, but with a .txt extension.
-# A missing caption file will log a warning, but then just train using an empty caption.
-path = '/home/bluvoll/Descargas/Mayte-Avencri/Best-Shaded/'
 
-num_repeats = 2
-[[directory]]
-# Path to directory of images/videos, and corresponding caption files. The caption files should match the media file name, but with a .txt extension.
-# A missing caption file will log a warning, but then just train using an empty caption.
-path = '/home/bluvoll/Descargas/Mayte-Avencri/Extra-Repeats-Mayte/'
-
-num_repeats = 6
-[[directory]]
-# Path to directory of images/videos, and corresponding caption files. The caption files should match the media file name, but with a .txt extension.
-# A missing caption file will log a warning, but then just train using an empty caption.
-path = '/home/bluvoll/Descargas/Mayte-Avencri/OutfitAncient-2-lock/'
-
-num_repeats = 4
-[[directory]]
-# Path to directory of images/videos, and corresponding caption files. The caption files should match the media file name, but with a .txt extension.
-# A missing caption file will log a warning, but then just train using an empty caption.
-path = '/home/bluvoll/Descargas/Mayte-Avencri/RND2FinsLocked/'
-
-num_repeats = 1
 
 # Example of overriding some settings, and using ar_buckets to directly specify ARs.
 # ar_buckets = [[448, 576]]

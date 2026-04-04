@@ -46,7 +46,7 @@ num_ar_buckets = 7
 [[directory]]
 # Path to directory of images/videos, and corresponding caption files. The caption files should match the media file name, but with a .txt extension.
 # A missing caption file will log a warning, but then just train using an empty caption.
-path = '/home/bluvoll/Escritorio/data-upload-chromav4-exp/baking/kawahagi-tei/'
+path = '/home/bluvoll/test1'
 
 num_repeats = 1
 

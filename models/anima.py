@@ -622,8 +622,11 @@ class AnimaPipeline(BasePipeline):
         else:
             self.adapter_target_modules = ['Block']
 
-        # Option to exclude AdaLN modulation layers from LoRA training
+        # Per-component LoRA training toggles (all default to True)
         self.train_adaln = self.model_config.get('train_adaln', True)
+        self.train_self_attn = self.model_config.get('train_self_attn', True)
+        self.train_cross_attn = self.model_config.get('train_cross_attn', True)
+        self.train_mlp = self.model_config.get('train_mlp', True)
 
         # === Caption Processing Config ===
         # Build a config dict for caption processing
@@ -815,43 +818,50 @@ class AnimaPipeline(BasePipeline):
         # Call base implementation first
         super().configure_adapter(adapter_config)
 
+        # Freeze components based on config toggles
+        freeze_patterns = {}
         if not self.train_adaln:
-            # Remove AdaLN modulation layers from LoRA targets by disabling their gradients
-            adaln_count = 0
-            for name, p in self.transformer.named_parameters():
-                if p.requires_grad and 'adaln_modulation' in name:
-                    p.requires_grad = False
-                    adaln_count += 1
-            print(f"Note: train_adaln=false - Disabled {adaln_count} AdaLN LoRA parameters")
-
+            freeze_patterns['adaln_modulation'] = 'AdaLN'
+        if not self.train_self_attn:
+            freeze_patterns['self_attn'] = 'self_attn'
+        if not self.train_cross_attn:
+            freeze_patterns['cross_attn'] = 'cross_attn'
+        if not self.train_mlp:
+            freeze_patterns['.mlp.'] = 'MLP'
         if not self.train_llm_adapter:
-            # Safety: ensure no LLMAdapter LoRA params are trainable
-            adapter_count = 0
+            freeze_patterns['llm_adapter'] = 'LLMAdapter'
+
+        for pattern, label in freeze_patterns.items():
+            count = 0
             for name, p in self.transformer.named_parameters():
-                if p.requires_grad and 'llm_adapter' in name:
+                if p.requires_grad and pattern in name:
                     p.requires_grad = False
-                    adapter_count += 1
-            if adapter_count > 0:
-                print(f"Note: train_llm_adapter=false - Disabled {adapter_count} LLMAdapter LoRA parameters")
+                    count += 1
+            if count > 0:
+                print(f"Note: train_{label.lower()}=false - Disabled {count} {label} LoRA parameters")
 
     def save_adapter(self, save_dir, peft_state_dict):
         self.peft_config.save_pretrained(save_dir)
 
-        # Strip LLMAdapter LoRA weights when not training the adapter
+        # Strip disabled components from saved LoRA
+        strip_patterns = {}
         if not self.train_llm_adapter:
-            before = len(peft_state_dict)
-            peft_state_dict = {k: v for k, v in peft_state_dict.items() if 'llm_adapter' not in k}
-            stripped = before - len(peft_state_dict)
-            if stripped > 0:
-                print(f"Stripped {stripped} LLMAdapter LoRA keys from saved adapter")
-
-        # Strip AdaLN LoRA weights when not training AdaLN
+            strip_patterns['llm_adapter'] = 'LLMAdapter'
         if not self.train_adaln:
+            strip_patterns['adaln_modulation'] = 'AdaLN'
+        if not self.train_self_attn:
+            strip_patterns['self_attn'] = 'self_attn'
+        if not self.train_cross_attn:
+            strip_patterns['cross_attn'] = 'cross_attn'
+        if not self.train_mlp:
+            strip_patterns['.mlp.'] = 'MLP'
+
+        for pattern, label in strip_patterns.items():
             before = len(peft_state_dict)
-            peft_state_dict = {k: v for k, v in peft_state_dict.items() if 'adaln_modulation' not in k}
+            peft_state_dict = {k: v for k, v in peft_state_dict.items() if pattern not in k}
             stripped = before - len(peft_state_dict)
             if stripped > 0:
-                print(f"Stripped {stripped} AdaLN LoRA keys from saved adapter")
+                print(f"Stripped {stripped} {label} LoRA keys from saved adapter")
 
         # ComfyUI format
         peft_state_dict = {'diffusion_model.'+k: v for k, v in peft_state_dict.items()}

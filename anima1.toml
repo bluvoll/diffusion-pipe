@@ -2,7 +2,7 @@
 # Anima is based on Cosmos-Predict2 with dual text encoders (Qwen3-0.6B + T5's Tokenizer)
 
 output_dir = '/home/bluvoll/anima-test'
-dataset = 'dataset.toml'
+dataset = 'dataset1.toml'
 
 # Training settings
 epochs = 30

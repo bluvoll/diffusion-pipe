@@ -24,6 +24,13 @@ class Cache:
 
     def __getitem__(self, idx):
         assert isinstance(idx, int)
+        # In-memory cache: deserialized items live in Python heap after first access.
+        # For datasets that fit in RAM, this turns subsequent fetches into dict lookups
+        # (eliminates SSD I/O, torch.load pickle overhead, and worker IPC).
+        if not hasattr(self, '_mem_cache'):
+            self._mem_cache = {}
+        if idx in self._mem_cache:
+            return self._mem_cache[idx]
         shard_id, shard_index = self.items[idx]
         offset, size = self.shard_metadata[shard_id][shard_index]
         f = self.open_files.setdefault(shard_id, open(self.path / f'shard_{shard_id}.bin', 'rb'))
@@ -31,6 +38,7 @@ class Cache:
         byte_string = f.read(size)
         buffer = io.BytesIO(byte_string)
         item = torch.load(buffer, map_location='cpu')
+        self._mem_cache[idx] = item
         return item
 
 

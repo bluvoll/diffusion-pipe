@@ -16,6 +16,10 @@ import torch
 import torch.nn as nn
 
 
+def _is_trainable_param(name: str) -> bool:
+    return 'lora' in name or 'lycoris' in name or 'hada_' in name or 'lokr_' in name
+
+
 def clean_memory_on_device(device: torch.device):
     r"""
     Clean memory on the specified device, will be called from training scripts.
@@ -53,7 +57,7 @@ def swap_weight_devices_cuda(device: torch.device, layer_to_cpu: nn.Module, laye
 
     modules_to_cpu = {k: v for k, v in layer_to_cpu.named_modules()}
     for module_to_cuda_name, module_to_cuda in layer_to_cuda.named_modules():
-        if 'lora' in module_to_cuda_name:
+        if _is_trainable_param(module_to_cuda_name):
             continue
         if hasattr(module_to_cuda, "weight") and module_to_cuda.weight is not None:
             module_to_cpu = modules_to_cpu.get(module_to_cuda_name, None)
@@ -113,7 +117,7 @@ def swap_weight_devices_no_cuda(device: torch.device, layer_to_cpu: nn.Module, l
 
 def weights_to_device(layer: nn.Module, device: torch.device):
     for name, module in layer.named_modules():
-        if device.type == 'cpu' and 'lora' in name:
+        if device.type == 'cpu' and _is_trainable_param(name):
             continue
         if hasattr(module, "weight") and module.weight is not None:
             module.weight.data = module.weight.data.to(device, non_blocking=True)

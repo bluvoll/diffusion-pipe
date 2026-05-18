@@ -1,0 +1,123 @@
+# =========================================================================
+# LyCORIS Algorithm Reference
+# =========================================================================
+# Comprehensive reference of every adapter algorithm exposed by our LyCORIS
+# integration. Pick ONE [adapter] block — comment out the rest.
+#
+# All algorithms accept these common keys:
+#   type, rank, alpha, dtype, dropout, init_from_existing
+#
+# Most algorithms also accept these (forwarded to LyCORIS only if the chosen
+# module supports them — unknown keys are silently filtered):
+#   rank_dropout, module_dropout, rank_dropout_scale, use_tucker, use_scalar,
+#   bypass_mode, rs_lora, weight_decompose, wd_on_out
+#
+# Refer to lokr_example.toml for the surrounding training-config knobs.
+# =========================================================================
+
+
+# ----- LoCon -----------------------------------------------------------
+# LyCORIS's own LoRA implementation. Same shape as PEFT LoRA but exposes
+# DoRA, rsLoRA, rank/module dropout, etc. Drop-in replacement for type='lora'
+# when you want any of those features.
+[adapter]
+type = 'locon'
+rank = 16
+alpha = 8
+dtype = 'bfloat16'
+dropout = 0.0
+weight_decompose = true   # DoRA
+#rs_lora = true            # rank-stabilized scaling
+#rank_dropout = 0.0
+#module_dropout = 0.0
+
+
+# ----- LoHa ------------------------------------------------------------
+# Hadamard product of two low-rank decompositions. High expressivity at
+# low rank. See examples/loha_example.toml for the full knob list.
+# [adapter]
+# type = 'loha'
+# rank = 8
+# alpha = 4
+# dtype = 'bfloat16'
+# dropout = 0.0
+# weight_decompose = true
+
+
+# ----- LoKr ------------------------------------------------------------
+# Kronecker product factorization. Very compact at factor=-1. See
+# examples/lokr_example.toml for the full knob list.
+# [adapter]
+# type = 'lokr'
+# rank = 4
+# alpha = 4
+# dtype = 'bfloat16'
+# dropout = 0.0
+# factor = -1
+# decompose_both = true
+# weight_decompose = true
+
+
+# ----- GLoRA -----------------------------------------------------------
+# Generalized LoRA: adds extra prompt-tuning style parameters on top of
+# the standard A/B decomposition. Heavier than LoCon.
+# [adapter]
+# type = 'glora'
+# rank = 4
+# alpha = 4
+# dtype = 'bfloat16'
+# dropout = 0.0
+# weight_decompose = true
+
+
+# ----- DyLoRA ----------------------------------------------------------
+# Dynamic LoRA: samples a random sub-rank each step so you can serve any
+# rank up to `rank` at inference without retraining.
+# [adapter]
+# type = 'dylora'
+# rank = 16
+# alpha = 8
+# dtype = 'bfloat16'
+# dropout = 0.0
+# block_size = 4        # rank-slice block size for the dynamic sampling
+# weight_decompose = true
+
+
+# ----- IA³ -------------------------------------------------------------
+# Infused Adapter by Inhibiting and Amplifying Inner Activations. Trains
+# one scalar vector per linear, super lightweight. `rank` is irrelevant
+# but still required by the config; set it to 1.
+# [adapter]
+# type = 'ia3'
+# rank = 1
+# alpha = 1
+# dtype = 'bfloat16'
+# dropout = 0.0
+# train_on_input = false
+
+
+# ----- Diagonal OFT ----------------------------------------------------
+# Orthogonal Fine-tuning with block-diagonal rotation matrix. Preserves
+# the model's representational geometry — strong for style transfer.
+# `rank` here acts as block size (factor).
+# [adapter]
+# type = 'diag_oft'
+# rank = 4
+# alpha = 1
+# dtype = 'bfloat16'
+# dropout = 0.0
+# constraint = 0.0      # cayley-parametrization constraint; 0 = unconstrained
+# rescaled = false
+
+
+# ----- BOFT ------------------------------------------------------------
+# Butterfly Orthogonal Fine-tuning. More expressive than diag_oft at
+# similar parameter count. `rank` acts as butterfly factor.
+# [adapter]
+# type = 'boft'
+# rank = 4
+# alpha = 1
+# dtype = 'bfloat16'
+# dropout = 0.0
+# constraint = 0.0
+# rescaled = false

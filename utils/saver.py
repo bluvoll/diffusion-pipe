@@ -5,6 +5,7 @@ import time
 import sys
 
 import torch
+import safetensors.torch
 from deepspeed import comm as dist
 from deepspeed.utils.logging import logger
 
@@ -80,7 +81,12 @@ class Saver:
             state_dict = {}
             for path in tmp_dir.glob('*.bin'):
                 state_dict.update(torch.load(path, weights_only=True, map_location='cpu'))
-            self.model.save_adapter(save_dir, state_dict)
+            is_lycoris = bool(getattr(self.model, 'lycoris_modules', None))
+            if is_lycoris:
+                sd = {'diffusion_model.' + k: v for k, v in state_dict.items()}
+                safetensors.torch.save_file(sd, save_dir / 'adapter_model.safetensors', metadata={'format': 'pt'})
+            else:
+                self.model.save_adapter(save_dir, state_dict)
             shutil.copy(self.args.config, save_dir)
             shutil.rmtree(tmp_dir)
 

@@ -18,6 +18,7 @@ from torchvision import transforms
 import imageio
 
 from utils.common import is_main_process, VIDEO_EXTENSIONS, round_to_nearest_multiple, round_down_to_multiple
+from utils.lycoris_adapter import configure_lycoris, build_lycoris_name_map, is_lycoris_state_dict_key, LYCORIS_ADAPTER_TYPES
 import comfy.utils
 import comfy.sd
 import comfy.sd1_clip
@@ -192,14 +193,25 @@ class BasePipeline:
                 bias='none',
                 target_modules=target_linear_modules
             )
+            self.peft_config = peft_config
+            self.lora_model = peft.get_peft_model(self.transformer, peft_config)
+            if is_main_process():
+                self.lora_model.print_trainable_parameters()
+        elif adapter_type in LYCORIS_ADAPTER_TYPES:
+            self.lycoris_modules = configure_lycoris(
+                self.transformer,
+                self.adapter_target_modules,
+                adapter_config,
+            )
+            self.lora_model = self.transformer
+            for name, p in self.transformer.named_parameters():
+                if '_lycoris_' not in name:
+                    p.requires_grad_(False)
         else:
             raise NotImplementedError(f'Adapter type {adapter_type} is not implemented')
-        self.peft_config = peft_config
-        self.lora_model = peft.get_peft_model(self.transformer, peft_config)
-        if is_main_process():
-            self.lora_model.print_trainable_parameters()
         for name, p in self.transformer.named_parameters():
-            p.original_name = name
+            if not hasattr(p, 'original_name'):
+                p.original_name = name
             if p.requires_grad:
                 p.data = p.data.to(adapter_config['dtype'])
 
@@ -217,14 +229,22 @@ class BasePipeline:
         adapter_state_dict = safetensors.torch.load_file(safetensors_files[0])
         modified_state_dict = {}
         model_parameters = set(name for name, p in self.transformer.named_parameters())
+        lycoris_name_map = build_lycoris_name_map(self.transformer)
         for k, v in adapter_state_dict.items():
-            # Replace Diffusers or ComfyUI prefix
-            k = re.sub(r'^(transformer|diffusion_model)\.', '', k)
-            # Replace weight at end for LoRA format
-            k = re.sub(r'\.weight$', '.default.weight', k)
-            if k not in model_parameters:
-                raise RuntimeError(f'modified_state_dict key {k} is not in the model parameters')
-            modified_state_dict[k] = v
+            # Try PEFT path first
+            k_stripped = re.sub(r'^(transformer|diffusion_model)\.', '', k)
+            k_peft = re.sub(r'\.weight$', '.default.weight', k_stripped)
+            if k_peft in model_parameters:
+                modified_state_dict[k_peft] = v
+                continue
+            # Try LyCORIS path: match against original_name
+            if k in lycoris_name_map:
+                modified_state_dict[lycoris_name_map[k]] = v
+                continue
+            if k_stripped in lycoris_name_map:
+                modified_state_dict[lycoris_name_map[k_stripped]] = v
+                continue
+            raise RuntimeError(f'modified_state_dict key {k} is not in the model parameters')
         self.transformer.load_state_dict(modified_state_dict, strict=False)
 
     def load_and_fuse_adapter(self, path):
@@ -468,14 +488,25 @@ class ComfyPipeline:
                 bias='none',
                 target_modules=target_linear_modules
             )
+            self.peft_config = peft_config
+            self.lora_model = peft.get_peft_model(self.diffusion_model, peft_config)
+            if is_main_process():
+                self.lora_model.print_trainable_parameters()
+        elif adapter_type in LYCORIS_ADAPTER_TYPES:
+            self.lycoris_modules = configure_lycoris(
+                self.diffusion_model,
+                self.adapter_target_modules,
+                adapter_config,
+            )
+            self.lora_model = self.diffusion_model
+            for name, p in self.diffusion_model.named_parameters():
+                if '_lycoris_' not in name:
+                    p.requires_grad_(False)
         else:
             raise NotImplementedError(f'Adapter type {adapter_type} is not implemented')
-        self.peft_config = peft_config
-        self.lora_model = peft.get_peft_model(self.diffusion_model, peft_config)
-        if is_main_process():
-            self.lora_model.print_trainable_parameters()
         for name, p in self.diffusion_model.named_parameters():
-            p.original_name = name
+            if not hasattr(p, 'original_name'):
+                p.original_name = name
             if p.requires_grad:
                 p.data = p.data.to(adapter_config['dtype'])
 
@@ -496,14 +527,20 @@ class ComfyPipeline:
         adapter_state_dict = safetensors.torch.load_file(safetensors_files[0])
         modified_state_dict = {}
         model_parameters = set(name for name, p in self.diffusion_model.named_parameters())
+        lycoris_name_map = build_lycoris_name_map(self.diffusion_model)
         for k, v in adapter_state_dict.items():
-            # Replace Diffusers or ComfyUI prefix
-            k = re.sub(r'^(transformer|diffusion_model)\.', '', k)
-            # Replace weight at end for LoRA format
-            k = re.sub(r'\.weight$', '.default.weight', k)
-            if k not in model_parameters:
-                raise RuntimeError(f'modified_state_dict key {k} is not in the model parameters')
-            modified_state_dict[k] = v
+            k_stripped = re.sub(r'^(transformer|diffusion_model)\.', '', k)
+            k_peft = re.sub(r'\.weight$', '.default.weight', k_stripped)
+            if k_peft in model_parameters:
+                modified_state_dict[k_peft] = v
+                continue
+            if k in lycoris_name_map:
+                modified_state_dict[lycoris_name_map[k]] = v
+                continue
+            if k_stripped in lycoris_name_map:
+                modified_state_dict[lycoris_name_map[k_stripped]] = v
+                continue
+            raise RuntimeError(f'modified_state_dict key {k} is not in the model parameters')
         self.diffusion_model.load_state_dict(modified_state_dict, strict=False)
 
     def load_and_fuse_adapter(self, path):

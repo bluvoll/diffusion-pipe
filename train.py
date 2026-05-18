@@ -28,6 +28,7 @@ import numpy as np
 from utils import dataset as dataset_util
 from utils import common
 from utils.common import is_main_process, get_rank, DTYPE_MAP, empty_cuda_cache
+from utils.lycoris_adapter import LYCORIS_ADAPTER_TYPES
 import utils.saver
 from utils.isolate_rng import isolate_rng
 from utils.patches import apply_patches
@@ -123,6 +124,13 @@ def set_config_defaults(config):
                     'This script forces alpha=rank to make the saved LoRA format simpler and more predictable with downstream inference programs. Please remove alpha from the config.'
                 )
             adapter_config['alpha'] = adapter_config['rank']
+            adapter_config.setdefault('dropout', 0.0)
+            adapter_config.setdefault('dtype', model_dtype_str)
+            adapter_config['dtype'] = DTYPE_MAP[adapter_config['dtype']]
+        elif adapter_type in LYCORIS_ADAPTER_TYPES:
+            adapter_config.setdefault('rank', 1)
+            if 'alpha' not in adapter_config:
+                adapter_config['alpha'] = adapter_config['rank']
             adapter_config.setdefault('dropout', 0.0)
             adapter_config.setdefault('dtype', model_dtype_str)
             adapter_config['dtype'] = DTYPE_MAP[adapter_config['dtype']]

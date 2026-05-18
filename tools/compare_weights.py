@@ -1,12 +1,12 @@
 """
-Compare L1 and L2 weight similarity between:
-  - Cosmos2 vs Anima Preview 1  (DiT weights only, no LLMAdapter)
-  - Cosmos2 vs Anima Preview 2  (DiT weights only, no LLMAdapter)
-  - Anima Preview 1 vs Anima Preview 2  (DiT + LLMAdapter)
+Compare L1 and L2 weight similarity along the Anima training progression:
+  Cosmos2 → Preview1 → Preview2 → Preview3 → Base v1.0
 
-cosmos2.safetensors uses the original Cosmos2 key naming scheme.
-Anima previews use internal naming (net. prefix stripped before compare).
-A converter normalises cosmos2 keys to Anima internal naming before comparison.
+Cosmos2 only contains DiT weights; the Anima checkpoints additionally carry
+an LLMAdapter. cosmos2.safetensors uses the original Cosmos2 key naming
+scheme; Anima checkpoints use internal naming (net./diffusion_model. prefix
+stripped before compare). A converter normalises cosmos2 keys to Anima
+internal naming before comparison.
 """
 
 import re
@@ -18,6 +18,8 @@ from pathlib import Path
 COSMOS2  = Path('/home/bluvoll/diffusion-pipe/cosmos2.safetensors')
 PREVIEW1 = Path('/home/bluvoll/ComfyUI/models/diffusion_models/anima-preview.safetensors')
 PREVIEW2 = Path('/home/bluvoll/ComfyUI/models/diffusion_models/anima-preview2.safetensors')
+PREVIEW3 = Path('/home/bluvoll/ComfyUI/models/diffusion_models/anima-preview3-base.safetensors')
+BASE     = Path('/home/bluvoll/ComfyUI/models/diffusion_models/anima-base-v1.0.safetensors')
 
 
 # ---------------------------------------------------------------------------
@@ -261,20 +263,37 @@ def main():
     cosmos_raw = st.load_file(str(COSMOS2), device='cpu')
     cosmos     = cosmos2_to_anima(cosmos_raw)
 
-    p1 = load_anima(PREVIEW1)
-    p2 = load_anima(PREVIEW2)
+    p1   = load_anima(PREVIEW1)
+    p2   = load_anima(PREVIEW2)
+    p3   = load_anima(PREVIEW3)
+    base = load_anima(BASE)
 
-    p1_dit, p1_llm = split_llm(p1)
-    p2_dit, p2_llm = split_llm(p2)
+    p1_dit,   p1_llm   = split_llm(p1)
+    p2_dit,   p2_llm   = split_llm(p2)
+    p3_dit,   p3_llm   = split_llm(p3)
+    base_dit, base_llm = split_llm(base)
 
     print(f"  Cosmos2  (converted) : {len(cosmos)} keys")
     print(f"  Preview1             : {len(p1_dit)} DiT + {len(p1_llm)} LLMAdapter")
     print(f"  Preview2             : {len(p2_dit)} DiT + {len(p2_llm)} LLMAdapter")
+    print(f"  Preview3             : {len(p3_dit)} DiT + {len(p3_llm)} LLMAdapter")
+    print(f"  Base v1.0            : {len(base_dit)} DiT + {len(base_llm)} LLMAdapter")
 
-    compare(cosmos,  p1_dit,  "Cosmos2  →  Anima Preview 1  (DiT only)")
-    compare(cosmos,  p2_dit,  "Cosmos2  →  Anima Preview 2  (DiT only)")
-    compare(p1_dit,  p2_dit,  "Preview1 →  Preview 2        (DiT only)")
-    compare(p1_llm,  p2_llm,  "Preview1 →  Preview 2        (LLMAdapter only)")
+    # Drift from Cosmos2 baseline (DiT only)
+    compare(cosmos,   p1_dit,   "Cosmos2  →  Anima Preview 1  (DiT only)")
+    compare(cosmos,   p2_dit,   "Cosmos2  →  Anima Preview 2  (DiT only)")
+    compare(cosmos,   p3_dit,   "Cosmos2  →  Anima Preview 3  (DiT only)")
+    compare(cosmos,   base_dit, "Cosmos2  →  Anima Base v1.0  (DiT only)")
+
+    # Sequential progression — DiT
+    compare(p1_dit,   p2_dit,   "Preview1 →  Preview 2        (DiT only)")
+    compare(p2_dit,   p3_dit,   "Preview2 →  Preview 3        (DiT only)")
+    compare(p3_dit,   base_dit, "Preview3 →  Base v1.0        (DiT only)")
+
+    # Sequential progression — LLMAdapter
+    compare(p1_llm,   p2_llm,   "Preview1 →  Preview 2        (LLMAdapter only)")
+    compare(p2_llm,   p3_llm,   "Preview2 →  Preview 3        (LLMAdapter only)")
+    compare(p3_llm,   base_llm, "Preview3 →  Base v1.0        (LLMAdapter only)")
 
 
 if __name__ == '__main__':

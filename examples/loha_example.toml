@@ -1,0 +1,39 @@
+# LoHA (Hadamard Product Low-Rank Adaptation) adapter example.
+# Uses the Hadamard (element-wise) product of two low-rank matrices:
+#   ΔW = (W1a @ W1b) ⊙ (W2a @ W2b)
+# This allows rank ≤ dim², enabling high expressivity at small ranks.
+# Recommended rank: 4-32, alpha: rank/2 ~ rank
+#
+# For full training config, see examples/main_example.toml or the lokr_example.toml.
+# For all available algorithms and their options, see examples/lycoris_algorithms.toml.
+
+[adapter]
+type = 'loha'
+rank = 8
+# alpha controls the scaling of the adapter output. Unlike LoRA, LyCORIS allows custom alpha.
+# Defaults to rank if not specified. Recommended: 1 to half of rank.
+alpha = 4
+dtype = 'bfloat16'
+dropout = 0.0
+
+# ---- LyCORIS knobs (all optional) ----
+# DoRA — Weight-Decomposed Low-Rank Adaptation. Stronger than vanilla LoHa at the same
+# rank. Adds a small magnitude vector per layer and trains direction only.
+#weight_decompose = true
+#wd_on_out = true       # DoRA decomposition axis. True = output dim (default), False = input dim.
+
+# rsLoRA — rank-stabilized scaling (1/sqrt(rank) instead of alpha/rank). Lets you safely
+# use higher ranks without alpha tuning.
+#rs_lora = true
+
+# Regularization
+#rank_dropout = 0.0     # Randomly drop rank dimensions per step.
+#module_dropout = 0.0   # Randomly drop entire modules per step.
+#rank_dropout_scale = false  # Scale outputs when rank_dropout > 0.
+
+# Misc
+#use_tucker = false     # Tucker decomposition. Mostly useful for conv layers; harmless for pure-Linear models.
+#use_scalar = false     # Adds a learnable scalar multiplier on the delta.
+
+# Optional: initialize from a previously trained adapter.
+#init_from_existing = '/path/to/previous/epoch50'

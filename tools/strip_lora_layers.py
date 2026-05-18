@@ -13,8 +13,8 @@ import safetensors.torch
 
 def main():
     parser = argparse.ArgumentParser(description='Strip layer types from Anima LoRA')
-    parser.add_argument('input', help='Input safetensors file')
-    parser.add_argument('output', help='Output safetensors file')
+    parser.add_argument('--input', help='Input safetensors file')
+    parser.add_argument('--output', help='Output safetensors file')
     parser.add_argument('--strip', nargs='+', required=True,
                         help='Layer types to strip (e.g. mlp, self_attn, cross_attn, adaln_modulation, llm_adapter)')
     args = parser.parse_args()

@@ -5,7 +5,7 @@
 # as many times as the length of this list.
 # If you just want to use predetermined (width, height, frames) size buckets, see the example cosmos_dataset.toml
 # file for how you can do that.
-resolutions = [768]
+resolutions = [1024]
 
 # You can give resolutions as (width, height) pairs also. This doesn't do anything different, it's just
 # another way of specifying the area(s) (i.e. total number of pixels) you want to train on.
@@ -46,9 +46,18 @@ num_ar_buckets = 7
 [[directory]]
 # Path to directory of images/videos, and corresponding caption files. The caption files should match the media file name, but with a .txt extension.
 # A missing caption file will log a warning, but then just train using an empty caption.
-path = '/home/bluvoll/Escritorio/kanojos/'
+path = '/home/bluvoll/Escritorio/kuse (0201)/'
 
 num_repeats = 1
+
+[[directory]]
+# Path to directory of images/videos, and corresponding caption files. The caption files should match the media file name, but with a .txt extension.
+# A missing caption file will log a warning, but then just train using an empty caption.
+path = '/home/bluvoll/Escritorio/colors/colors-rf/'
+
+num_repeats = 1
+
+
 
 # Example of overriding some settings, and using ar_buckets to directly specify ARs.
 # ar_buckets = [[448, 576]]

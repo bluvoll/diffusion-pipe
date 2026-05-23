@@ -1,11 +1,11 @@
 # Anima Training Configuration
 # Anima is based on Cosmos-Predict2 with dual text encoders (Qwen3-0.6B + T5's Tokenizer)
 
-output_dir = '/home/bluvoll/anima-test/kanojos-768-DoKr'
+output_dir = '/home/bluvoll/anima-test/kuse-1024'
 dataset = 'dataset.toml'
 # Training settings
-epochs = 45
-micro_batch_size_per_gpu = 24
+epochs = 50
+micro_batch_size_per_gpu = 10
 pipeline_stages = 1 #This shards your model across GPUs, without a fused optimizer, or fused optimizer groups, you need 33GB for batch size 1 Full Finetuning
 gradient_accumulation_steps = 1
 gradient_clipping = 1.0
@@ -156,13 +156,13 @@ qwen_nf4 = true
 # Optional: initialize from existing LoRA
 # init_from_existing = '/path/to/existing_lora'
 [adapter]
-type = 'lokr'
-rank = 10000
+type = 'lora'
+rank = 64
 # alpha controls scaling. For LoKr, alpha is divided by rank before scaling.
-alpha = 10000
+
 dtype = 'bfloat16'
-weight_decompose = false
-factor = 4
+
+#factor = 2
 
 
 

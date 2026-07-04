@@ -26,6 +26,10 @@ dropout = 0.0
 # use higher ranks without alpha tuning.
 #rs_lora = true
 
+# LoRA+ — assign a higher LR to the B-side of each rank decomposition (hada_w*_b).
+# Paper-recommended ratio is 16; halve optimizer lr when enabling.
+#loraplus_lr_ratio = 16
+
 # Regularization
 #rank_dropout = 0.0     # Randomly drop rank dimensions per step.
 #module_dropout = 0.0   # Randomly drop entire modules per step.

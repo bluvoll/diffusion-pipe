@@ -159,6 +159,9 @@ factor = -1
 #wd_on_out = true
 # rsLoRA — rank-stabilized scaling (1/sqrt(rank)).
 #rs_lora = true
+# LoRA+ — assign a higher LR to the B-side weights (lokr_w*_b). Most useful when
+# decompose_both = true. Paper-recommended ratio is 16.
+#loraplus_lr_ratio = 16
 # Decompose BOTH Kronecker factors into low-rank (default: only one).
 #decompose_both = true
 # Force one factor to be a full matrix (LoRA-like expressivity).

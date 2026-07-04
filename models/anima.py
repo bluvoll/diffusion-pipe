@@ -1126,7 +1126,7 @@ class AnimaPipeline(BasePipeline):
             elif len(params) > 0:
                 param_groups.append({'params': params, 'lr': lr})
 
-        return param_groups
+        return self._apply_loraplus_split(param_groups)
 
     def get_loss_fn(self):
         cfm_enabled = self.model_config.get('cfm_enabled', False)

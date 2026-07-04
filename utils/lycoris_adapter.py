@@ -32,7 +32,7 @@ LYCORIS_ADAPTER_TYPES = frozenset(LYCORIS_MODULE_CLASSES.keys())
 # Adapter config keys consumed by train.py / configure_lycoris() directly.
 # Everything else under [adapter] is forwarded to the LyCORIS module ctor when the
 # module accepts that kwarg (filtered out otherwise).
-_RESERVED_CONFIG_KEYS = {'type', 'rank', 'alpha', 'dropout', 'dtype', 'init_from_existing'}
+_RESERVED_CONFIG_KEYS = {'type', 'rank', 'alpha', 'dropout', 'dtype', 'init_from_existing', 'loraplus_lr_ratio'}
 
 # Known parameter-name patterns per algorithm. Used by is_lycoris_state_dict_key
 # for sniffing externally-loaded state_dicts.

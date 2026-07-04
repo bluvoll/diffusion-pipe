@@ -1,8 +1,17 @@
 import argparse
 import os
+import sys
+import warnings
+
+# Silence noisy FutureWarning bitsandbytes emits via torch._check_is_size inside
+# its fake-op kernels — fires repeatedly during torch.compile tracing when
+# qwen_nf4 is on. Library-internal; we can't fix it upstream from here.
+# Filter by message (resilient to stacklevel attribution) AND by module (precise).
+warnings.filterwarnings('ignore', category=FutureWarning, message=r'_check_is_size will be removed.*')
+warnings.filterwarnings('ignore', category=FutureWarning, module=r'bitsandbytes\._ops')
+
 import wandb
 # Disable comfy_kitchen during training to avoid autograd errors
-import sys
 sys.modules["comfy_kitchen"] = None
 from datetime import datetime, timezone
 import shutil
@@ -350,6 +359,9 @@ if __name__ == '__main__':
     elif model_type == 'anima':
         from models import anima
         model = anima.AnimaPipeline(config)
+    elif model_type == 'nanosaur':
+        from models import nanosaur
+        model = nanosaur.NanoSaurPipeline(config)
     elif model_type == 'omnigen2':
         from models import omnigen2
         model = omnigen2.OmniGen2Pipeline(config)

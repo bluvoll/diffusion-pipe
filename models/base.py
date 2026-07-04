@@ -29,6 +29,30 @@ def make_contiguous(*tensors):
     return tuple(x.contiguous() for x in tensors)
 
 
+# Substring patterns that identify the "B-side" (output projection) of a low-rank
+# adapter. LoRA+ assigns these a higher learning rate than the "A-side" (input
+# projection) — paper-recommended ratio ~16x.
+#   PEFT LoRA:           module.lora_B.default.weight
+#   LyCORIS LoCon/DyLoRA: module.lora_up.weight
+#   LyCORIS LoHa:        module.hada_w1_b, module.hada_w2_b
+#   LyCORIS LoKr:        module.lokr_w1_b, module.lokr_w2_b
+#   LyCORIS GLoRA:       module.b1.weight, module.b2.weight
+_LORAPLUS_B_PATTERNS = (
+    '.lora_B.',
+    '.lora_up.',
+    '.hada_w1_b',
+    '.hada_w2_b',
+    '.lokr_w1_b',
+    '.lokr_w2_b',
+    '.b1.weight',
+    '.b2.weight',
+)
+
+
+def is_lora_plus_b_param(name: str) -> bool:
+    return any(pat in name for pat in _LORAPLUS_B_PATTERNS)
+
+
 def extract_clips(video, target_frames, video_clip_mode):
     # video is (channels, num_frames, height, width)
     frames = video.shape[1]
@@ -277,7 +301,49 @@ class BasePipeline:
     # Get param groups that will be passed into the optimizer. Models can override this, e.g. SDXL
     # supports separate learning rates for unet and text encoders.
     def get_param_groups(self, parameters):
-        return [{'params': parameters}]
+        return self._apply_loraplus_split([{'params': list(parameters)}])
+
+    # Split each param group into A-side and B-side sub-groups for LoRA+, using
+    # the user-supplied loraplus_lr_ratio from [adapter]. Composes with any
+    # model-specific per-component LR routing — model subclasses call this on
+    # their final group list before returning.
+    def _apply_loraplus_split(self, param_groups):
+        adapter_config = self.config.get('adapter') or {}
+        ratio = adapter_config.get('loraplus_lr_ratio')
+        if not ratio or ratio == 1:
+            return param_groups
+        default_lr = (self.config.get('optimizer') or {}).get('lr')
+        new_groups = []
+        total_b = 0
+        for pg in param_groups:
+            lr = pg.get('lr', default_lr)
+            if lr is None:
+                new_groups.append(pg)
+                continue
+            a_params, b_params = [], []
+            for p in pg['params']:
+                name = getattr(p, 'original_name', '')
+                if is_lora_plus_b_param(name):
+                    b_params.append(p)
+                else:
+                    a_params.append(p)
+            total_b += len(b_params)
+            if a_params:
+                new_groups.append({**pg, 'params': a_params, 'lr': lr})
+            if b_params:
+                new_groups.append({**pg, 'params': b_params, 'lr': lr * ratio})
+        if is_main_process():
+            if total_b == 0:
+                adapter_type = adapter_config.get('type', '?')
+                print(
+                    f'WARNING: loraplus_lr_ratio={ratio} was set but no B-side params were found '
+                    f"(adapter type='{adapter_type}'). LoRA+ requires an A/B-style decomposition. "
+                    f'Likely cause: LyCORIS fell back to "full matrix mode" — lower rank, or set '
+                    f'decompose_both=true for LoKr.'
+                )
+            else:
+                print(f'LoRA+ enabled: ratio={ratio}, {total_b} B-side params boosted')
+        return new_groups
 
     # Default loss_fn. MSE between output and target, with mask support.
     def get_loss_fn(self):
@@ -617,7 +683,47 @@ class ComfyPipeline:
     # Get param groups that will be passed into the optimizer. Models can override this, e.g. SDXL
     # supports separate learning rates for unet and text encoders.
     def get_param_groups(self, parameters):
-        return [{'params': parameters}]
+        return self._apply_loraplus_split([{'params': list(parameters)}])
+
+    # See BasePipeline._apply_loraplus_split. Duplicated here so both pipeline base
+    # classes can use it without diamond inheritance.
+    def _apply_loraplus_split(self, param_groups):
+        adapter_config = self.config.get('adapter') or {}
+        ratio = adapter_config.get('loraplus_lr_ratio')
+        if not ratio or ratio == 1:
+            return param_groups
+        default_lr = (self.config.get('optimizer') or {}).get('lr')
+        new_groups = []
+        total_b = 0
+        for pg in param_groups:
+            lr = pg.get('lr', default_lr)
+            if lr is None:
+                new_groups.append(pg)
+                continue
+            a_params, b_params = [], []
+            for p in pg['params']:
+                name = getattr(p, 'original_name', '')
+                if is_lora_plus_b_param(name):
+                    b_params.append(p)
+                else:
+                    a_params.append(p)
+            total_b += len(b_params)
+            if a_params:
+                new_groups.append({**pg, 'params': a_params, 'lr': lr})
+            if b_params:
+                new_groups.append({**pg, 'params': b_params, 'lr': lr * ratio})
+        if is_main_process():
+            if total_b == 0:
+                adapter_type = adapter_config.get('type', '?')
+                print(
+                    f'WARNING: loraplus_lr_ratio={ratio} was set but no B-side params were found '
+                    f"(adapter type='{adapter_type}'). LoRA+ requires an A/B-style decomposition. "
+                    f'Likely cause: LyCORIS fell back to "full matrix mode" — lower rank, or set '
+                    f'decompose_both=true for LoKr.'
+                )
+            else:
+                print(f'LoRA+ enabled: ratio={ratio}, {total_b} B-side params boosted')
+        return new_groups
 
     # Default loss_fn. MSE between output and target, with mask support.
     def get_loss_fn(self):

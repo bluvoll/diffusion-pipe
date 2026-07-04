@@ -7,6 +7,12 @@
 # All algorithms accept these common keys:
 #   type, rank, alpha, dtype, dropout, init_from_existing
 #
+# LoRA+ — applies to ANY adapter type with A/B structure (locon, loha, lokr,
+# glora, dylora) AND to PEFT type='lora'. Sets a higher learning rate for the
+# B-side (output projection) of each low-rank decomposition. Paper-recommended
+# ratio is 16. Halve the optimizer lr when you turn this on.
+#   loraplus_lr_ratio = 16   # ηB / ηA; 1 = disabled
+#
 # Most algorithms also accept these (forwarded to LyCORIS only if the chosen
 # module supports them — unknown keys are silently filtered):
 #   rank_dropout, module_dropout, rank_dropout_scale, use_tucker, use_scalar,
@@ -28,6 +34,7 @@ dtype = 'bfloat16'
 dropout = 0.0
 weight_decompose = true   # DoRA
 #rs_lora = true            # rank-stabilized scaling
+#loraplus_lr_ratio = 16    # LoRA+ — boost B-side LR. Halve optimizer lr when enabling.
 #rank_dropout = 0.0
 #module_dropout = 0.0
 

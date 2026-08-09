@@ -1,0 +1,15 @@
+# Dataset config for Mage-Flow text-to-image training.
+# MageVAE downsamples by 16, so resolutions should be multiples of 16
+# (they are rounded down to a multiple of 16 automatically).
+
+resolutions = [1024]
+
+enable_ar_bucket = true
+min_ar = 0.5
+max_ar = 2.0
+num_ar_buckets = 7
+
+[[directory]]
+# Directory of images with matching .txt caption files (same basename).
+path = '/home/bluvoll/path/to/your/images'
+num_repeats = 1

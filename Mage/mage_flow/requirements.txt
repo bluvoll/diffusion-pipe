@@ -1,0 +1,39 @@
+# MageFlow inference dependencies.
+#
+# Validated in a fresh uv env with Python 3.11 and torch 2.13.0 (CUDA 12.6, the
+# `cu126` wheels). torch 2.13.0 fixes a low-severity torch.jit.script advisory
+# (affects <= 2.12.1). Loosen the `==` to `>=` if you need flexibility.
+#
+# Two-step install (flash-attn must build against your torch, isolation OFF):
+#   uv pip install -r requirements.txt
+#   uv pip install --no-build-isolation flash-attn==2.8.3
+# (plain `pip` works the same way.)
+
+# --- core numerics / DL ---
+torch==2.13.0
+torchvision==0.28.0         # reference-image resize in the edit path
+numpy==2.4.3                # used by the test/benchmark scripts
+
+# --- diffusion + HF model stack ---
+diffusers==0.38.0
+transformers==5.5.0
+accelerate==1.13.0          # used by transformers `from_pretrained` loading path
+safetensors==0.8.0          # diffusers 0.38.0 requires safetensors>=0.8.0
+huggingface_hub>=0.20       # snapshot_download for MageFlowPipeline.from_pretrained("<hf repo id>")
+
+# --- flash attention: INSTALL SEPARATELY, NOT via this file ---
+# It builds a CUDA extension against your installed torch/CUDA ABI, so it needs
+# torch present and build isolation OFF. After installing everything else, run:
+#   uv pip install --no-build-isolation flash-attn==2.8.3
+# (listing it here would make `-r requirements.txt` try to build it in isolation
+#  and fail / mismatch the ABI.)
+
+# --- tensor ops / config / io / logging ---
+einops==0.8.2
+pydantic==2.12.5
+pillow==12.3.0
+loguru==0.7.3
+typing_extensions==4.15.0   # only needed on Python < 3.11 (fallback for typing.Unpack)
+
+# --- Gradio web app (mage-flow-app / mage_flow/app.py) ---
+gradio>=6.0

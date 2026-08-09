@@ -164,3 +164,17 @@ anima/
 qwen0.6/
 .codex
 .claude/
+
+# Mage-Flow: model weights and training outputs (never commit)
+mage-flow/
+output/
+out/
+*.zip
+
+# Mage-Flow vendored upstream: keep the Python code + LICENSE, but not the
+# papers/cover art or the separate mage_vl model (kept on disk, not in git)
+Mage/*.pdf
+Mage/assets/
+Mage/mage_vl/
+Mage/**/assets/
+Mage/.git/

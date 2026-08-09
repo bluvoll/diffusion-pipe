@@ -1,0 +1,101 @@
+# Mage-Flow LoRA training example.
+#
+# Mage-Flow = MageVAE (16x downsample, 128 latent channels) + 12-block
+# double-stream MMDiT + Qwen3-VL text conditioning. Only the transformer is
+# trained; the VAE and text encoder are frozen. Text-to-image only.
+
+output_dir = '/home/bluvoll/diffusion-pipe/output/mage-flow-lora'
+dataset = '/home/bluvoll/diffusion-pipe/examples/mage_flow_dataset.toml'
+
+# training settings
+epochs = 25
+micro_batch_size_per_gpu = 1
+pipeline_stages = 1
+gradient_accumulation_steps = 4
+gradient_clipping = 1
+
+# misc settings
+save_every_n_epochs = 1
+#checkpoint_every_n_minutes = 120
+activation_checkpointing = true
+#blocks_to_swap = 6
+save_dtype = 'bfloat16'
+caching_batch_size = 1
+steps_per_print = 1
+
+[model]
+type = 'mage_flow'
+# Path to the Mage-Flow HF-style repo (model_index.json + transformer/ vae/ text_encoder/).
+diffusers_path = '/home/bluvoll/diffusion-pipe/mage-flow'
+# You can override individual components instead of diffusers_path:
+#transformer_path = '/path/to/transformer/diffusion_pytorch_model.safetensors'
+#vae_path = '/path/to/vae/diffusion_pytorch_model.safetensors'
+#text_encoder_path = '/path/to/text_encoder'
+dtype = 'bfloat16'
+# Optional lower precision for the 12 transformer blocks (projections/norms stay in dtype).
+#transformer_dtype = 'float8'
+# Flow-matching timestep sampling. `shift` biases sampled t toward high noise to
+# match the inference schedule. Measured against the released inference schedule
+# (static shift 6.0 -> sigma median ~0.86, ~72% of steps above 0.7):
+#   logit_normal + shift 6.0 (below): median ~0.857, slightly top-heavier -> good default.
+#   uniform      + shift 6.0        : matches the inference density almost exactly.
+#   shift 1.0 (no shift)            : median 0.5 -> UNDER-weights the noise levels
+#                                     the model actually uses; not recommended here.
+timestep_sample_method = 'logit_normal'   # or 'uniform' to match inference density exactly
+sigmoid_scale = 1.0
+shift = 6.0
+# Cosine optimal transport: pair each latent with its most-similar noise sample
+# for straighter flow trajectories. Only active when micro_batch_size_per_gpu > 1.
+#flow_use_ot = true
+# VAE posterior: false = deterministic mean (stable cached latents). true = sample.
+vae_sample_posterior = false
+# Max text tokens (excluding the dropped system-prompt prefix).
+max_text_tokens = 512
+
+# --- Text embedding caching vs on-the-fly caption augmentation ---
+# true (default): encode each caption ONCE and cache to disk. Fast, low VRAM,
+#   but the caption augmentation options below have NO effect.
+# false: keep Qwen3-VL resident and re-encode every step, enabling per-step
+#   caption augmentation. Costs ~the text encoder's size (~9 GB bf16) in extra
+#   VRAM and adds a text-encode per step. Set false to use the options below.
+cache_text_embeddings = true
+# Quantize the RESIDENT text encoder to save VRAM in on-the-fly mode
+# (ignored when cache_text_embeddings = true). Choose one:
+#text_encoder_fp8 = true            # store Linear weights as float8 (~half TE VRAM)
+#text_encoder_nf4 = true            # 4-bit bitsandbytes (~quarter TE VRAM, needs bitsandbytes)
+# ...or point text_encoder_path at an already-quantized Qwen3-VL repo, which
+# loads low-bit directly (no flag needed); only valid if Mage used stock Qwen3-VL:
+#text_encoder_path = '/path/to/Qwen3-VL-bnb-4bit'
+# Tags / natural-language mixing works in BOTH cache modes: variants are encoded
+# once and weighted-selected per step. Expects a '{basename}_nl.txt' beside each
+# image (missing NL falls back to tags). tags_nl/nl_tags are the concatenations.
+#caption_mode = 'mixed'             # 'tags' | 'nl' | 'mixed'
+#mixed_weights = {tags = 50, nl = 10, tags_nl = 20, nl_tags = 20}
+#
+# Per-step random augmentation below ONLY works with cache_text_embeddings = false
+# (it re-rolls the caption every step, so it can't be cached):
+#shuffle_tags = true                 # shuffle comma-separated tags each step
+#tag_delimiter = ', '
+#shuffle_keep_first_n = 1            # keep first N tags fixed (e.g. trigger word)
+#tag_dropout_percent = 0.1          # randomly drop 10% of (unprotected) tags
+#caption_dropout_percent = 0.05     # 5% of steps use an empty caption (CFG); in cache
+                                    # mode use the framework's uncond fraction instead
+#protected_tags_file = '/home/bluvoll/diffusion-pipe/examples/protected_tags.txt'
+#nl_shuffle_sentences = true        # on-the-fly only
+#nl_keep_first_sentence = true
+#debug_caption_processing = true    # print a few processed captions
+#debug_caption_interval = 100
+
+[adapter]
+type = 'lora'
+rank = 32
+alpha = 32
+dropout = 0.0
+dtype = 'bfloat16'
+
+[optimizer]
+type = 'AdamW8bitKahan'
+lr = 1e-4
+betas = [0.9, 0.999]
+weight_decay = 0.01
+eps = 1e-8

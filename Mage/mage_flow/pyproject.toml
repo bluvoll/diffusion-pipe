@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mage-flow"
+version = "0.1.0"
+description = "MageFlow: standalone text-to-image inference (extracted from VisionFlow)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    # torch 2.13.0 fixes a low-severity torch.jit.script advisory (<= 2.12.1).
+    "torch>=2.13.0",
+    "torchvision>=0.28.0",
+    "diffusers>=0.37.0",
+    # transformers 5.6.0 removed the `input_embeds` kwarg of `create_causal_mask`
+    # that the text encoder relies on; keep below it until the call is migrated.
+    "transformers>=5.3.0,<5.6",
+    "accelerate>=1.0.0",
+    "einops>=0.8.0",
+    "pydantic>=2.0",
+    "pillow>=10.0",
+    "numpy>=1.26",
+    "safetensors>=0.4.0",
+    "loguru>=0.7.0",
+    "huggingface_hub>=0.20",
+    "gradio>=6.0",
+    "typing_extensions>=4.0; python_version < '3.11'",
+]
+
+# NOTE: flash-attn is a runtime dependency but is intentionally NOT declared here.
+# It builds from source against your installed torch and must be installed with
+# build isolation OFF, AFTER the rest (see README):
+#   uv pip install --no-build-isolation flash-attn==2.8.3
+
+[project.scripts]
+mage-flow = "mage_flow.inference:main"
+mage-flow-edit = "mage_flow.inference:main_edit"
+mage-flow-app = "mage_flow.app:main"
+
+# pyproject.toml lives INSIDE the package dir, so the build root (".") IS the
+# `mage_flow` package. Map the package name to "." and list its subpackages.
+[tool.setuptools]
+packages = ["mage_flow", "mage_flow.models", "mage_flow.models.modules"]
+
+[tool.setuptools.package-dir]
+"mage_flow" = "."
+
+[tool.setuptools.package-data]
+"mage_flow" = ["**/*.yaml", "**/*.json"]

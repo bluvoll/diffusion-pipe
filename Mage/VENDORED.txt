@@ -1,0 +1,3 @@
+Vendored from https://github.com/microsoft/Mage.git @ df7f84d (MIT License, (c) 2026 Microsoft).
+Only mage_flow/ Python code is used by diffusion-pipe (models/mage_flow.py).
+Papers, cover art, and mage_vl/ are gitignored.

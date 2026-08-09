@@ -322,9 +322,10 @@ class ConcatenatedBatchedDataset:
         self.datasets = datasets
         self.post_init_called = False
 
-    def post_init(self, global_batch_size: dict, global_batch_size_image: dict, data_parallel_rank: int, data_parallel_world_size: int):
+    def post_init(self, global_batch_size: dict, global_batch_size_image: dict, data_parallel_rank: int, data_parallel_world_size: int, gradient_accumulation_steps: int):
         self.data_parallel_rank = data_parallel_rank
         self.data_parallel_world_size = data_parallel_world_size
+        self.gradient_accumulation_steps = gradient_accumulation_steps
         iteration_order = []
         size_bucket = self.datasets[0].size_bucket
         for i, ds in enumerate(self.datasets):
@@ -352,8 +353,8 @@ class ConcatenatedBatchedDataset:
                     min_diff = diff
                     self.global_batch_size = bs
 
+        self._fit_batches()
         assert self.global_batch_size % self.data_parallel_world_size == 0
-        self._make_divisible_by(self.global_batch_size)
         self.batch_size = self.global_batch_size // self.data_parallel_world_size
         self.post_init_called = True
 
@@ -367,22 +368,35 @@ class ConcatenatedBatchedDataset:
         end_idx = start_idx + self.batch_size
         return [self.datasets[i.item()][j.item()] for i, j in self.iteration_order[start_idx : end_idx]]
 
-    def _make_divisible_by(self, n):
-        current_length = len(self.iteration_order)
-        if current_length == 0:
+    def _fit_batches(self):
+        num_samples = len(self.iteration_order)
+        if num_samples == 0:
             return
-        if current_length < n:
-            # Tile the iteration order so the bucket fills at least one batch
-            repeats_needed = math.ceil(n / current_length)
-            self.iteration_order = np.tile(self.iteration_order, (repeats_needed, 1))
+        # Smallest global batch that still splits evenly across data parallel ranks and gradient accumulation steps.
+        min_batch = self.data_parallel_world_size * self.gradient_accumulation_steps
+        if num_samples < self.global_batch_size:
+            # Shrink this bucket's batch size rather than filling a full batch with duplicated samples.
+            if num_samples < min_batch:
+                repeats_needed = math.ceil(min_batch / num_samples)
+                self.iteration_order = np.tile(self.iteration_order, (repeats_needed, 1))
+                if is_main_process():
+                    logger.warning(
+                        f'Size bucket {self.datasets[0].size_bucket} has only {num_samples} samples but at least'
+                        f' {min_batch} are needed to cover every data parallel rank and gradient accumulation step.'
+                        f' Repeating samples {repeats_needed}x.'
+                    )
+            self.global_batch_size = (len(self.iteration_order) // min_batch) * min_batch
             if is_main_process():
-                logger.warning(
-                    f"Size bucket {self.datasets[0].size_bucket} has only {current_length} samples "
-                    f"but needs {n} for a full batch. Repeating images {repeats_needed}x "
-                    f"(total {len(self.iteration_order)}) to avoid dropping the bucket."
+                logger.info(
+                    f'Size bucket {self.datasets[0].size_bucket} has fewer samples ({num_samples}) than the'
+                    f' configured global batch size, using a reduced global batch size of {self.global_batch_size}.'
                 )
-        new_length = (len(self.iteration_order) // n) * n
-        self.iteration_order = self.iteration_order[:new_length]
+        # Pad the final partial batch by wrapping around to the start of the (shuffled) iteration order,
+        # so the tail samples still train every epoch instead of being silently dropped.
+        remainder = len(self.iteration_order) % self.global_batch_size
+        if remainder != 0:
+            pad = self.global_batch_size - remainder
+            self.iteration_order = np.concatenate([self.iteration_order, self.iteration_order[:pad]])
 
 
 class ARBucketDataset:
@@ -934,7 +948,7 @@ class Dataset:
             self.buckets.append(ConcatenatedBatchedDataset(datasets))
 
         for bucket in self.buckets:
-            bucket.post_init(global_batch_size, global_batch_size_image, data_parallel_rank, data_parallel_world_size)
+            bucket.post_init(global_batch_size, global_batch_size_image, data_parallel_rank, data_parallel_world_size, gradient_accumulation_steps)
 
         iteration_order = []
         for i, bucket in enumerate(self.buckets):
@@ -1086,7 +1100,7 @@ def _cache_fn(datasets, queue, preprocess_media_file_fn, num_text_encoders, rege
                 pipes[rank] = mp.Pipe(duplex=False)
             parent_conn, child_conn = pipes[rank]
             control_file = example['control_file'] if 'control_file' in example else None
-            queue.put((text_encoder_idx+1, example['caption'], example['is_video'], control_file, child_conn))
+            queue.put((text_encoder_idx+1, example['caption'], example['is_video'], control_file, example['image_spec'], child_conn))
             result = parent_conn.recv()  # dict
             result['image_spec'] = example['image_spec']
             return result
@@ -1107,8 +1121,14 @@ class DatasetManager:
         self.submodels = [self.vae] + list(self.text_encoders)
         self.call_vae_fn = self.model.get_call_vae_fn(self.vae)
         self.call_text_encoder_fns = [self.model.get_call_text_encoder_fn(text_encoder) for text_encoder in self.text_encoders]
+        # Detect optional extra args a text-encoder fn wants, by parameter name
+        # (robust to ordering; a fn may want control_file, image_spec, or both).
         self.te_fn_requires_control_file = [
-            len(signature(fn).parameters) == 3
+            'control_file' in signature(fn).parameters
+            for fn in self.call_text_encoder_fns
+        ]
+        self.te_fn_requires_image_spec = [
+            'image_spec' in signature(fn).parameters
             for fn in self.call_text_encoder_fns
         ]
         self.regenerate_cache = regenerate_cache
@@ -1204,11 +1224,13 @@ class DatasetManager:
             else:
                 results = self.call_vae_fn(tensor)
         elif id > 0:
-            caption, is_video, control_file, pipe = task[1:]
+            caption, is_video, control_file, image_spec, pipe = task[1:]
             args = [caption, is_video]
             idx = id - 1
             if self.te_fn_requires_control_file[idx]:
                 args.append(control_file)
+            if self.te_fn_requires_image_spec[idx]:
+                args.append(image_spec)
             results = self.call_text_encoder_fns[idx](*args)
         else:
             raise RuntimeError()

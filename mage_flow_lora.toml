@@ -1,0 +1,78 @@
+# Mage-Flow LoRA training example.
+#
+# Mage-Flow = MageVAE (16x downsample, 128 latent channels) + 12-block
+# double-stream MMDiT + Qwen3-VL text conditioning. Only the transformer is
+# trained; the VAE and text encoder are frozen. Text-to-image only.
+
+output_dir = '/home/bluvoll/diffusion-pipe/output/mage-flow-lora-3d'
+dataset = '/home/bluvoll/diffusion-pipe/mage_flow_dataset.toml'
+
+# training settings
+epochs = 100
+micro_batch_size_per_gpu = 20
+pipeline_stages = 1
+gradient_accumulation_steps = 2
+gradient_clipping = 1
+warmup_steps =5
+# misc settings
+save_every_n_epochs = 1
+#checkpoint_every_n_minutes = 120
+activation_checkpointing = true
+#blocks_to_swap = 6
+save_dtype = 'bfloat16'
+caching_batch_size = 8
+steps_per_print = 1
+
+[model]
+type = 'mage_flow'
+# Path to the Mage-Flow HF-style repo (model_index.json + transformer/ vae/ text_encoder/).
+diffusers_path = '/home/bluvoll/diffusion-pipe/mage-flow'
+# You can override individual components instead of diffusers_path:
+#transformer_path = '/path/to/transformer/diffusion_pytorch_model.safetensors'
+#vae_path = '/path/to/vae/diffusion_pytorch_model.safetensors'
+#text_encoder_path = '/path/to/text_encoder'
+dtype = 'bfloat16'
+# Optional lower precision for the 12 transformer blocks (projections/norms stay in dtype).
+#transformer_dtype = 'float8'|
+# Flow-matching timestep sampling.
+timestep_sample_method = 'logit_normal'
+sigmoid_scale = 1.0
+# Static-shift schedule (Mage-Flow default is 6.0; the released checkpoint uses this at inference).
+shift = 5.0
+# VAE posterior: false = deterministic mean (stable cached latents). true = sample.
+vae_sample_posterior = false
+# Max text tokens (excluding the dropped system-prompt prefix).
+max_text_tokens = 512
+
+# --- Text embedding caching vs on-the-fly caption augmentation ---
+# true (default): encode each caption ONCE and cache to disk. Fast, low VRAM,
+#   but the caption augmentation options below have NO effect.
+# false: keep Qwen3-VL resident and re-encode every step, enabling per-step
+#   caption augmentation. Costs ~the text encoder's size (~9 GB bf16) in extra
+#   VRAM and adds a text-encode per step. Set false to use the options below.
+cache_text_embeddings = true
+# Caption augmentation (only active when cache_text_embeddings = false):
+#shuffle_tags = true                 # shuffle comma-separated tags each step
+#tag_delimiter = ', '
+#shuffle_keep_first_n = 1            # keep first N tags fixed (e.g. trigger word)
+#tag_dropout_percent = 0.1          # randomly drop 10% of (unprotected) tags
+#caption_dropout_percent = 0.05     # 5% of steps use an empty caption (CFG)
+#protected_tags_file = '/home/bluvoll/diffusion-pipe/examples/protected_tags.txt'
+# Tags / natural-language mixing (expects a '{basename}_nl.txt' beside each image):
+#caption_mode = 'mixed'             # 'tags' | 'nl' | 'mixed'
+#mixed_weights = {tags = 50, nl = 30, tags_nl = 10, nl_tags = 10}
+#nl_shuffle_sentences = true
+#nl_keep_first_sentence = true
+#debug_caption_processing = true    # print a few processed captions
+#debug_caption_interval = 100
+[adapter]
+type = 'lora'
+rank = 64
+dtype = 'bfloat16'
+
+[optimizer]  # AdamW8bitKahan alternative
+ type = 'adamw_optimi'
+ lr = 2.5e-5
+ betas = [0.9, 0.999]
+ weight_decay = 0.02 
+ eps = 1e-8

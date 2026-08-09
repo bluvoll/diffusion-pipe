@@ -359,9 +359,9 @@ if __name__ == '__main__':
     elif model_type == 'anima':
         from models import anima
         model = anima.AnimaPipeline(config)
-    elif model_type == 'nanosaur':
-        from models import nanosaur
-        model = nanosaur.NanoSaurPipeline(config)
+    elif model_type == 'mage_flow':
+        from models import mage_flow
+        model = mage_flow.MageFlowPipeline(config)
     elif model_type == 'omnigen2':
         from models import omnigen2
         model = omnigen2.OmniGen2Pipeline(config)
@@ -686,8 +686,19 @@ if __name__ == '__main__':
             from optimizers.fftdescent import FFTDescent
             klass = FFTDescent
         else:
-            import pytorch_optimizer
-            klass = getattr(pytorch_optimizer, optim_type)
+            # Try adv_optm first (AdamW_adv, Muon_adv, Prodigy_adv, Lion_adv,
+            # Simplified_AdEMAMix, ... — all exposing nnmf_factor factorization,
+            # compiled_optimizer fused step, stochastic_rounding, AdEMAMix, etc.
+            # as constructor kwargs), then fall back to pytorch_optimizer.
+            klass = None
+            try:
+                import adv_optm
+                klass = getattr(adv_optm, optim_type, None)
+            except ImportError:
+                pass
+            if klass is None:
+                import pytorch_optimizer
+                klass = getattr(pytorch_optimizer, optim_type)
 
         if optim_config.get('gradient_release', False):
             # Prevent deepspeed from logging every single param group lr
@@ -730,9 +741,13 @@ if __name__ == '__main__':
             for pg in model.get_param_groups(model_parameters):
                 param_kwargs = kwargs.copy()
                 if isinstance(pg, dict):
-                    # param group
+                    # param group. Only override lr if the group sets one;
+                    # otherwise keep the optimizer's configured lr (param_kwargs
+                    # is a copy of kwargs, which already has it). The default
+                    # get_param_groups returns {'params': [...]} with no 'lr'.
                     for p in pg['params']:
-                        param_kwargs['lr'] = pg['lr']
+                        if 'lr' in pg:
+                            param_kwargs['lr'] = pg['lr']
                         optimizer_dict[p] = klass([p], **param_kwargs)
                 else:
                     # param

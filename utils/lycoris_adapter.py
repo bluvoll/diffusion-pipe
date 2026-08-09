@@ -106,7 +106,12 @@ def configure_lycoris(transformer, adapter_target_modules, adapter_config):
         register_parent = parent
         suffix_parts = [child_name]
         current_path = parent_path
-        while isinstance(register_parent, nn.Sequential):
+        # Never register the tracking module into a container that executes its
+        # children by iteration (nn.Sequential OR nn.ModuleList) — e.g. diffusers
+        # FeedForward.net is a ModuleList, and appending here would run the
+        # LyCORIS module as a spurious extra layer. Walk up to a non-container
+        # ancestor and register there instead.
+        while isinstance(register_parent, (nn.Sequential, nn.ModuleList)):
             if current_path:
                 suffix_parts.insert(0, current_path.split(".")[-1])
                 current_path = ".".join(current_path.split(".")[:-1])

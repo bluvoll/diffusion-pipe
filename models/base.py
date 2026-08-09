@@ -7,6 +7,8 @@ from collections import defaultdict
 import types
 sys.path.insert(0, os.path.join(os.path.abspath(os.path.dirname(__file__)), '../submodules/ComfyUI'))
 
+import cv2
+import numpy as np
 import peft
 import torch
 from torch import nn
@@ -77,7 +79,7 @@ def extract_clips(video, target_frames, video_clip_mode):
         raise NotImplementedError(f'video_clip_mode={video_clip_mode} is not recognized')
 
 
-def convert_crop_and_resize(pil_img, width_and_height):
+def convert_crop_and_resize(pil_img, width_and_height, resize_method='bicubic'):
     if pil_img.mode not in ['RGB', 'RGBA'] and 'transparency' in pil_img.info:
         pil_img = pil_img.convert('RGBA')
 
@@ -89,7 +91,29 @@ def convert_crop_and_resize(pil_img, width_and_height):
     else:
         pil_img = pil_img.convert('RGB')
 
-    return ImageOps.fit(pil_img, width_and_height)
+    if resize_method == 'area':
+        # cv2 INTER_AREA, after the same centered aspect-ratio crop ImageOps.fit would take.
+        # INTER_AREA is only meaningful when downscaling; use LANCZOS for the (rare) upscale.
+        target_w, target_h = width_and_height
+        src_w, src_h = pil_img.size
+        if src_w * target_h >= src_h * target_w:
+            crop_w, crop_h = round(src_h * target_w / target_h), src_h
+        else:
+            crop_w, crop_h = src_w, round(src_w * target_h / target_w)
+        left = (src_w - crop_w) // 2
+        top = (src_h - crop_h) // 2
+        pil_img = pil_img.crop((left, top, left + crop_w, top + crop_h))
+        interp = cv2.INTER_AREA if crop_w > target_w else cv2.INTER_LANCZOS4
+        resized = cv2.resize(np.asarray(pil_img), (target_w, target_h), interpolation=interp)
+        return Image.fromarray(resized)
+    elif resize_method == 'lanczos':
+        method = Image.Resampling.LANCZOS
+    elif resize_method == 'bicubic':
+        method = Image.Resampling.BICUBIC
+    else:
+        raise ValueError(f'resize_method={resize_method} is not recognized (use bicubic, lanczos, or area)')
+
+    return ImageOps.fit(pil_img, width_and_height, method=method)
 
 
 class PreprocessMediaFile:
@@ -97,6 +121,8 @@ class PreprocessMediaFile:
         self.config = config
         self.video_clip_mode = config.get('video_clip_mode', 'single_beginning')
         print(f'using video_clip_mode={self.video_clip_mode}')
+        self.resize_method = config.get('resize_method', 'bicubic')
+        print(f'using resize_method={self.resize_method}')
         self.pil_to_tensor = transforms.Compose([transforms.ToTensor(), transforms.Normalize([0.5], [0.5])])
         self.support_video = support_video
         self.framerate = framerate
@@ -167,7 +193,7 @@ class PreprocessMediaFile:
         for i, frame in enumerate(video):
             if not isinstance(frame, Image.Image):
                 frame = torchvision.transforms.functional.to_pil_image(frame)
-            cropped_image = convert_crop_and_resize(frame, resize_wh)
+            cropped_image = convert_crop_and_resize(frame, resize_wh, self.resize_method)
             resized_video[i, ...] = self.pil_to_tensor(cropped_image)
 
         if hasattr(filepath_or_file, 'close'):

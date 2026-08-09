@@ -1,0 +1,100 @@
+# Mage-Flow full fine-tuning example (no [adapter] section -> train all
+# transformer params). The VAE and Qwen3-VL text encoder stay frozen.
+#
+# Full finetune of the ~4B transformer is memory heavy. Use pipeline_stages
+# across multiple GPUs and/or blocks_to_swap to fit. Consider a low LR.
+
+output_dir = '/home/bluvoll/diffusion-pipe/output/mage-flow-ft'
+dataset = '/home/bluvoll/diffusion-pipe/mage_flow_dataset.toml'
+
+# training settings
+epochs = 100
+micro_batch_size_per_gpu = 22
+pipeline_stages = 2
+gradient_accumulation_steps = 1
+gradient_clipping = 1
+warmup_steps =100
+# misc settings
+save_every_n_epochs = 1
+checkpoint_every_n_minutes = 200
+activation_checkpointing = true
+partition_split =[4]
+#compile = true
+# Offload N of the 12 transformer blocks to CPU to save VRAM (single-GPU full finetune).
+#blocks_to_swap = 8
+save_dtype = 'bfloat16'
+caching_batch_size = 1
+steps_per_print = 1
+
+[model]
+type = 'mage_flow'
+diffusers_path = '/home/bluvoll/diffusion-pipe/mage-flow'
+dtype = 'bfloat16'
+# Keep the trainable transformer in bf16 for full finetune (do NOT use float8 here).
+transformer_dtype = 'bfloat16'
+timestep_sample_method = 'logit_normal'
+sigmoid_scale = 1.0
+shift = 6.0
+vae_sample_posterior = false
+max_text_tokens = 512
+# --- Text embedding caching vs on-the-fly caption augmentation ---
+# true (default): encode each caption ONCE and cache to disk. Fast, low VRAM,
+#   but the caption augmentation options below have NO effect.
+# false: keep Qwen3-VL resident and re-encode every step, enabling per-step
+#   caption augmentation. Costs ~the text encoder's size (~9 GB bf16) in extra
+#   VRAM and adds a text-encode per step. Set false to use the options below.
+cache_text_embeddings = false
+# (ignored when cache_text_embeddings = true). Choose one:
+#text_encoder_fp8 = true            # store Linear weights as float8 (~half TE VRAM)
+text_encoder_nf4 = true            # 4-bit bitsandbytes (~quarter TE VRAM, needs bitsandbytes)
+# ...or point text_encoder_path at an already-quantized Qwen3-VL repo, which
+# loads low-bit directly (no flag needed); only valid if Mage used stock Qwen3-VL:
+#text_encoder_path = '/path/to/Qwen3-VL-bnb-4bit'
+# Tags / natural-language mixing works in BOTH cache modes: variants are encoded
+# once and weighted-selected per step. Expects a '{basename}_nl.txt' beside each
+# image (missing NL falls back to tags). tags_nl/nl_tags are the concatenations.
+caption_mode = 'mixed'             # 'tags' | 'nl' | 'mixed'
+mixed_weights = {tags = 30, nl = 30, tags_nl = 20, nl_tags = 20}
+#
+# Per-step random augmentation below ONLY works with cache_text_embeddings = false
+# (it re-rolls the caption every step, so it can't be cached):
+shuffle_tags = true                 # shuffle comma-separated tags each step
+tag_delimiter = ', '
+#shuffle_keep_first_n = 1            # keep first N tags fixed (e.g. trigger word)
+tag_dropout_percent = 0.1          # randomly drop 10% of (unprotected) tags
+caption_dropout_percent = 0.05     # 5% of steps use an empty caption (CFG); in cache
+                                    # mode use the framework's uncond fraction instead
+#protected_tags_file = '/home/bluvoll/diffusion-pipe/examples/protected_tags.txt'
+nl_shuffle_sentences = true        # on-the-fly only
+#nl_keep_first_sentence = true
+#debug_caption_processing = true    # print a few processed captions
+#debug_caption_interval = 100
+
+# No [adapter] section => full fine-tune of the transformer.
+
+[optimizer]
+type = 'Adopt_adv'
+lr = 3e-6
+betas = [0.9, 0.999]
+weight_decay = 0.01
+use_atan2 = true
+#compiled_optimizer = true
+nnmf_factor = true
+stochastic_rounding = true
+gradient_release = true
+# Alternative: any adv_optm optimizer (AdamW_adv, Muon_adv, Prodigy_adv,
+# Lion_adv, Simplified_AdEMAMix, ...) is usable by name, with its features as
+# plain keys. Great for lower-VRAM full finetune:
+# [optimizer]
+# type = 'AdamW_adv'
+# lr = 1e-5
+# betas = [0.9, 0.999]
+# weight_decay = 0.01
+# nnmf_factor = true          # factored 2nd moment (Adafactor-like memory saving)
+# stochastic_rounding = true  # bf16-friendly
+# compiled_optimizer = true   # torch.compile the fused step
+# gradient_release = true     # per-param step in a backward hook (big VRAM save)
+# compiled_optimizer + gradient_release is TESTED working together. gradient_release
+# steps every micro-batch (no accumulation buffer), so it LOCKS
+# gradient_accumulation_steps = 1 and requires data-parallel world size 1
+# (set pipeline_stages = num_gpus).

@@ -1,0 +1,75 @@
+# Mage-Flow full fine-tuning example (no [adapter] section -> train all
+# transformer params). The VAE and Qwen3-VL text encoder stay frozen.
+#
+# Full finetune of the ~4B transformer is memory heavy. Use pipeline_stages
+# across multiple GPUs and/or blocks_to_swap to fit. Consider a low LR.
+
+output_dir = '/home/bluvoll/diffusion-pipe/output/mage-flow-ft'
+dataset = '/home/bluvoll/diffusion-pipe/examples/mage_flow_dataset.toml'
+
+# training settings
+epochs = 20
+micro_batch_size_per_gpu = 1
+pipeline_stages = 2
+gradient_accumulation_steps = 4
+gradient_clipping = 1
+
+# misc settings
+save_every_n_epochs = 1
+checkpoint_every_n_minutes = 60
+activation_checkpointing = true
+# torch.compile the model forward (the real speedup). Use THIS rather than the
+# optimizer's compiled_optimizer. Composes with gradient_release.
+#compile = true
+# Offload N of the 12 transformer blocks to CPU to save VRAM (single-GPU full finetune).
+#blocks_to_swap = 8
+save_dtype = 'bfloat16'
+caching_batch_size = 1
+steps_per_print = 1
+
+[model]
+type = 'mage_flow'
+diffusers_path = '/home/bluvoll/diffusion-pipe/mage-flow'
+dtype = 'bfloat16'
+# Keep the trainable transformer in bf16 for full finetune (do NOT use float8 here).
+transformer_dtype = 'bfloat16'
+# shift=6.0 targets the inference sigma schedule (median ~0.86). Use
+# timestep_sample_method='uniform' + shift=6.0 to match that density exactly.
+timestep_sample_method = 'logit_normal'
+sigmoid_scale = 1.0
+shift = 6.0
+# Cosine optimal transport: pair each latent with its most-similar noise sample
+# for straighter flow trajectories. Only active when micro_batch_size_per_gpu > 1.
+#flow_use_ot = true
+vae_sample_posterior = false
+max_text_tokens = 512
+
+# No [adapter] section => full fine-tune of the transformer.
+
+[optimizer]
+type = 'AdamW8bitKahan'
+lr = 1e-5
+betas = [0.9, 0.999]
+weight_decay = 0.01
+eps = 1e-8
+
+# Alternative: any adv_optm optimizer (AdamW_adv, Muon_adv, Prodigy_adv,
+# Lion_adv, Simplified_AdEMAMix, ...) is usable by name, with its features as
+# plain keys. Great for lower-VRAM full finetune:
+# [optimizer]
+# type = 'AdamW_adv'
+# lr = 1e-5
+# betas = [0.9, 0.999]
+# weight_decay = 0.01
+# nnmf_factor = true          # factored 2nd moment (Adafactor-like memory saving)
+# stochastic_rounding = true  # bf16-friendly
+# gradient_release = true     # per-param step in a backward hook (big VRAM save).
+#   Locks gradient_accumulation_steps = 1 and requires data-parallel world size 1
+#   (set pipeline_stages = num_gpus).
+#
+# Do NOT set compiled_optimizer = true on a real model: it torch.compiles the
+# per-parameter step, and Dynamo recompiles for every distinct param shape/rank
+# (2D weights vs 1D norms/biases), blowing the recompile limit. To get compilation,
+# use diffusion-pipe's TOP-LEVEL `compile = true` instead — it compiles the model
+# FORWARD (where the speedup is) and composes fine with gradient_release.
+# (Minor: the complex RoPE op falls back to eager; the rest still compiles.)
